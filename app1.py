@@ -21,7 +21,7 @@ add_auth(
     support_email="Kottalgi.2022@gmail.com"
 )
 
-st.success(f"Welcome back, {st.session_state.email}! Full access unlocked."4
+st.success(f"Welcome back, {st.session_state.email}! Full access unlocked.")
 
 # st.success(f"Welcome back, {st.session_state.email}! Full access unlocked.")
 
@@ -167,3 +167,4 @@ if st.button("💾 Save All Data"):
     save_data(etfs, history)
 
     st.success("All data saved!")
+

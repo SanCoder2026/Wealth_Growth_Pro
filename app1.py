@@ -14,15 +14,12 @@ INITIAL_INVESTMENT = 81000.0
 TARGET_ALLOC = {"TQQQ": 0.40, "SOXL": 0.35, "UPRO": 0.25}
 
 # === SUBSCRIPTION PAYWALL ===
-add_auth(
-    required=True,
-    subscription_button_text="Subscribe $49/month → Unlock Full Tracker",
-    support_email="Kottalgi.2022@gmail.com"
-)
+add_auth(required=True)  # Only this line — all config from secrets.toml
 
-st.success(f"Welcome back, {st.session_state.email}! Full access unlocked.")
-
-# st.success(f"Welcome back, {st.session_state.email}! Full access unlocked.")
+if st.session_state.get("user_subscribed", False):
+    st.success(f"Welcome back, {st.session_state.get('email', 'Subscriber')}! Full access unlocked.")
+else:
+    st.info("Subscribe to unlock the full Wealth Growth Pro tracker.")
 
 # === DATA LOAD/SAVE ===
 def load_data():
@@ -166,6 +163,7 @@ if st.button("💾 Save All Data"):
     save_data(etfs, history)
 
     st.success("All data saved!")
+
 
 
 

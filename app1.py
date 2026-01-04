@@ -5,7 +5,7 @@ import plotly.graph_objects as go
 import json
 import os
 from datetime import datetime
-# from st_paywall import add_auth  # Subscription paywall
+from st_paywall import add_auth  # Subscription paywall
 
 # === CONFIG ===
 st.set_page_config(page_title="Covered Call Tracker Pro → $1M", layout="wide")
@@ -14,12 +14,14 @@ INITIAL_INVESTMENT = 81000.0
 TARGET_ALLOC = {"TQQQ": 0.40, "SOXL": 0.35, "UPRO": 0.25}
 
 # === SUBSCRIPTION PAYWALL ===
-# add_auth(
-  #  required=True,
-   # subscription_button_text="Subscribe $19/month → Unlock Full Tracker",
-    # price_id="price_1YOUR_PRICE_ID_HERE",  # ← REPLACE WITH YOUR STRIPE PRICE ID
-   # support_email="your-email@example.com"
-# )
+ add_auth(
+    required=True,
+    subscription_button_text="Subscribe $49/month → Unlock Full Tracker",
+    price_id="price_1SlzTB9fnrEEUWsbCrP30iSL",
+    support_email="Kottalgi.2022@gmail.com"
+)
+
+st.success(f"Welcome back, {st.session_state.email}! Full access unlocked."4
 
 # st.success(f"Welcome back, {st.session_state.email}! Full access unlocked.")
 

@@ -17,7 +17,6 @@ TARGET_ALLOC = {"TQQQ": 0.40, "SOXL": 0.35, "UPRO": 0.25}
 add_auth(
     required=True,
     subscription_button_text="Subscribe $49/month → Unlock Full Tracker",
-    # price_id="price_1SlzTB9fnrEEUWsbCrP30iSL",
     support_email="Kottalgi.2022@gmail.com"
 )
 
@@ -167,5 +166,6 @@ if st.button("💾 Save All Data"):
     save_data(etfs, history)
 
     st.success("All data saved!")
+
 
 

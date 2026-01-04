@@ -14,7 +14,7 @@ INITIAL_INVESTMENT = 81000.0
 TARGET_ALLOC = {"TQQQ": 0.40, "SOXL": 0.35, "UPRO": 0.25}
 
 # === SUBSCRIPTION PAYWALL ===
- add_auth(
+add_auth(
     required=True,
     subscription_button_text="Subscribe $49/month → Unlock Full Tracker",
     price_id="price_1SlzTB9fnrEEUWsbCrP30iSL",
@@ -165,4 +165,5 @@ else:
 
 if st.button("💾 Save All Data"):
     save_data(etfs, history)
+
     st.success("All data saved!")

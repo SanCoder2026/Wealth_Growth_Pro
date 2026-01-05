@@ -17,7 +17,7 @@ TARGET_ALLOC = {"TQQQ": 0.40, "SOXL": 0.35, "UPRO": 0.25}
 #add_auth(required=True)  # Only this line — all config from secrets.toml
 
 if st.session_state.get("user_subscribed", False):
-    #st.success(f"Welcome back, {st.session_state.get('email', 'Subscriber')}! Full access unlocked.")
+    st.success(f"Welcome back, {st.session_state.get('email', 'Subscriber')}! Full access unlocked.")
 else:
     st.info("Subscribe to unlock the full Wealth Growth Pro tracker.")
 
@@ -163,6 +163,7 @@ if st.button("💾 Save All Data"):
     save_data(etfs, history)
 
     st.success("All data saved!")
+
 
 
 

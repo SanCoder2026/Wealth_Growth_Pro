@@ -5,7 +5,7 @@ import plotly.graph_objects as go
 import json
 import os
 from datetime import datetime
-#from st_paywall import add_auth  # Subscription paywall
+from st_paywall import add_auth  # Subscription paywall
 
 # === CONFIG ===
 st.set_page_config(page_title="Wealth Growth Pro → $1M", layout="wide")
@@ -14,7 +14,7 @@ INITIAL_INVESTMENT = 81000.0
 TARGET_ALLOC = {"TQQQ": 0.40, "SOXL": 0.35, "UPRO": 0.25}
 
 # === SUBSCRIPTION PAYWALL ===
-# add_auth(required=True)  # Only this line — all config from secrets.toml
+add_auth(required=True)  # Handles login + subscription button
 
 if st.session_state.get("user_subscribed", False):
     st.success(f"Welcome back, {st.session_state.get('email', 'Subscriber')}! Full access unlocked.")
@@ -61,7 +61,7 @@ profit = net_equity - INITIAL_INVESTMENT
 pct_to_m = max(0, (net_equity / 1000000) * 100)
 
 # === DASHBOARD ===
-st.title("🚀 Covered Call Tracker Pro → $1M")
+st.title("🚀 Wealth Growth Pro → $1M")
 
 col1, col2, col3, col4 = st.columns(4)
 col1.metric("Gross Portfolio", f"${gross_value:,.2f}")
@@ -149,7 +149,6 @@ if history:
     df = pd.DataFrame(history)
     df["date"] = pd.to_datetime(df["date"])
     df["net_profit"] = df["portfolio_value"] - df["margin_debt"] - INITIAL_INVESTMENT
-
     fig = go.Figure()
     fig.add_trace(go.Scatter(x=df["date"], y=df["portfolio_value"], name="Gross Value", line=dict(color="royalblue")))
     fig.add_hline(y=INITIAL_INVESTMENT, line_dash="dash", line_color="red", annotation_text="Initial $81k")

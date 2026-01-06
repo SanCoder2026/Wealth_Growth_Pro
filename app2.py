@@ -2,15 +2,18 @@ import streamlit as st
 import yfinance as yf
 import pandas as pd
 import plotly.graph_objects as go
+import json
+import os
 from datetime import datetime
 
 # === CONFIG ===
-st.set_page_config(page_title="Wealth Growth Pro → $1M", layout="wide")
+st.set_page_config(page_title="Wealth Growth Pro → $1M", layout="wide", initial_sidebar_state="expanded")
+DATA_FILE = "tracker_data.json"
 INITIAL_INVESTMENT = 81000.0
 TARGET_ALLOC = {"TQQQ": 0.40, "SOXL": 0.35, "UPRO": 0.25}
-PREMIUM_TARGET_MONTHLY = 100000.0
+PREMIUM_TARGET_MONTHLY = 100000.0  # $100k/month goal
 
-# === SUBSCRIPTION PAYWALL (COMMENTED OUT) ===
+# === SUBSCRIPTION PAYWALL (COMMENTED OUT FOR NOW) ===
 # from st_paywall import add_auth
 # add_auth(required=True)
 # if st.session_state.get("user_subscribed", False):
@@ -18,25 +21,40 @@ PREMIUM_TARGET_MONTHLY = 100000.0
 # else:
 #     st.info("Subscribe to unlock the full Wealth Growth Pro tracker.")
 
-# Full access for now (paywall disabled)
 st.success("Wealth Growth Pro — Full Access")
 
-# === DATA PERSISTENCE (PER USER VIA SESSION STATE) ===
-if "etfs" not in st.session_state:
-    st.session_state.etfs = {t: {"shares": 0.0, "cost_basis": 0.0, "contracts_sold": 0, "weekly_contracts": 0} for t in TARGET_ALLOC}
-if "history" not in st.session_state:
-    st.session_state.history = []
-
-etfs = st.session_state.etfs
-history = st.session_state.history
-
 # === GLOBAL RESET BUTTON ===
-if st.button("🔴 Global Reset (Clear Session Data)"):
-    if st.button("Confirm Reset — This Clears Your Current Session"):
-        st.session_state.etfs = {t: {"shares": 0.0, "cost_basis": 0.0, "contracts_sold": 0, "weekly_contracts": 0} for t in TARGET_ALLOC}
-        st.session_state.history = []
-        st.success("Session reset! Refresh the app.")
+if st.button("🔴 Global Reset (Delete All Data)"):
+    if st.button("Confirm Reset — This Cannot Be Undone"):
+        if os.path.exists(DATA_FILE):
+            os.remove(DATA_FILE)
+        st.success("All data reset! Reload the app.")
         st.experimental_rerun()
+
+# === DATA LOAD/SAVE ===
+def load_data():
+    if os.path.exists(DATA_FILE):
+        try:
+            with open(DATA_FILE, "r") as f:
+                data = json.load(f)
+                etfs = data.get("etfs", {})
+                history = data.get("history", [])
+                for t in TARGET_ALLOC:
+                    if t not in etfs:
+                        etfs[t] = {"shares": 0.0, "cost_basis": 0.0, "contracts_sold": 0, "weekly_contracts": 0}
+                    else:
+                        if "weekly_contracts" not in etfs[t]:
+                            etfs[t]["weekly_contracts"] = 0
+                return etfs, history
+        except:
+            pass
+    return {t: {"shares": 0.0, "cost_basis": 0.0, "contracts_sold": 0, "weekly_contracts": 0} for t in TARGET_ALLOC}, []
+
+def save_data(etfs, history):
+    with open(DATA_FILE, "w") as f:
+        json.dump({"etfs": etfs, "history": history}, f)
+
+etfs, history = load_data()
 
 # === PRICE FETCH ===
 @st.cache_data(ttl=300)
@@ -54,13 +72,12 @@ def fetch_prices():
 prices = fetch_prices()
 
 # === CALCULATIONS ===
-gross_value = sum(etfs[t]["shares"] * prices.get(t, 0) for t in TARGET_ALLOC)
+gross_value = sum(etfs.get(t, {"shares": 0.0})["shares"] * prices.get(t, 0) for t in TARGET_ALLOC)
 margin = history[-1]["margin_debt"] if history else 0
 net_equity = gross_value - margin
 profit = net_equity - INITIAL_INVESTMENT
 pct_to_m = max(0, (net_equity / 1000000) * 100)
 
-# Monthly premium estimate (last 4 weeks rolling)
 total_premium_last4 = sum(h.get("premium", 0) for h in history[-4:])
 monthly_premium_est = total_premium_last4
 
@@ -105,58 +122,59 @@ for t in TARGET_ALLOC:
 st.subheader("Current Holdings")
 st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
 
-# Controls in sidebar
-with st.sidebar:
-    st.header("Weekly Update")
+# === DATA ENTRY SECTION (COLLAPSIBLE) ===
+with st.expander("📊 Data Entry (Expand to enter weekly updates – Collapse when done)", expanded=True):
+    col_left, col_right = st.columns(2)
 
-    premium = st.number_input("Premium Received ($)", min_value=0.0, step=10.0)
-    if st.button("Suggest Reinvestment") and premium > 0:
-        total_val = gross_value
-        deviations = {t: total_val * TARGET_ALLOC[t] - (etfs[t]["shares"] * prices[t]) for t in TARGET_ALLOC}
-        best = max(deviations, key=deviations.get)
-        shares_buy = premium / prices[best]
-        st.success(f"Buy **{shares_buy:.4f} {best}** @ ${prices[best]:.4f} (uses full ${premium:.2f})")
+    with col_left:
+        st.subheader("Weekly Premium & Suggestion")
+        premium = st.number_input("Premium Received ($)", min_value=0.0, step=10.0)
+        if st.button("Suggest Reinvestment") and premium > 0:
+            total_val = gross_value
+            deviations = {t: total_val * TARGET_ALLOC[t] - (etfs[t]["shares"] * prices[t]) for t in TARGET_ALLOC}
+            best = max(deviations, key=deviations.get)
+            shares_buy = premium / prices[best]
+            st.success(f"Buy **{shares_buy:.4f} {best}** @ ${prices[best]:.4f} (uses full ${premium:.2f})")
 
-    st.divider()
-    st.subheader("Add Purchase")
-    ticker = st.selectbox("Ticker", list(TARGET_ALLOC.keys()), key="add_ticker")
-    shares = st.number_input("Shares (fractional)", min_value=0.0, step=0.0001, key="add_shares")
-    avg_price = st.number_input("Avg Price", min_value=0.0, key="add_price")
-    if st.button("Submit Purchase"):
-        if shares > 0 and avg_price > 0:
-            old = etfs[ticker]
-            new_shares = old["shares"] + shares
-            new_basis = (old["shares"] * old["cost_basis"] + shares * avg_price) / new_shares
-            etfs[ticker]["shares"] = new_shares
-            etfs[ticker]["cost_basis"] = new_basis
-            # Record premium in history
+        st.subheader("Add Purchase")
+        ticker = st.selectbox("Ticker", list(TARGET_ALLOC.keys()), key="add_ticker")
+        shares = st.number_input("Shares (fractional)", min_value=0.0, step=0.0001, key="add_shares")
+        avg_price = st.number_input("Avg Price", min_value=0.0, key="add_price")
+        if st.button("Submit Purchase"):
+            if shares > 0 and avg_price > 0:
+                old = etfs[ticker]
+                new_shares = old["shares"] + shares
+                new_basis = (old["shares"] * old["cost_basis"] + shares * avg_price) / new_shares
+                etfs[ticker]["shares"] = new_shares
+                etfs[ticker]["cost_basis"] = new_basis
+                today = datetime.now().strftime("%Y-%m-%d")
+                history.append({"date": today, "portfolio_value": gross_value, "margin_debt": margin, "premium": premium})
+                save_data(etfs, history)
+                st.success("Purchase added!")
+
+    with col_right:
+        st.subheader("Update Contracts")
+        ct_weekly = st.selectbox("Ticker (Weekly)", list(TARGET_ALLOC.keys()), key="weekly_ticker")
+        weekly = st.number_input("Weekly Contracts", min_value=0, step=1, key="weekly_num")
+        if st.button("Update Weekly"):
+            etfs[ct_weekly]["weekly_contracts"] = weekly
+            save_data(etfs, history)
+            st.success("Weekly contracts updated")
+
+        ct_owned = st.selectbox("Ticker (Owned)", list(TARGET_ALLOC.keys()), key="owned_ticker")
+        owned = st.number_input("Contracts Owned", min_value=0, step=1, key="owned_num")
+        if st.button("Update Contracts Owned"):
+            etfs[ct_owned]["contracts_sold"] = owned
+            save_data(etfs, history)
+            st.success("Contracts Owned updated")
+
+        st.subheader("Record Margin Debt")
+        margin_input = st.number_input("Current Margin ($)", min_value=0.0, key="margin_input")
+        if st.button("Record"):
             today = datetime.now().strftime("%Y-%m-%d")
-            history.append({"date": today, "portfolio_value": gross_value, "margin_debt": margin, "premium": premium})
-            st.success("Purchase & premium added!")
-
-    st.divider()
-    st.subheader("Update Weekly Contracts")
-    ct_weekly = st.selectbox("Ticker", list(TARGET_ALLOC.keys()), key="weekly_ticker")
-    weekly = st.number_input("Weekly Contracts", min_value=0, step=1, key="weekly_num")
-    if st.button("Update Weekly"):
-        etfs[ct_weekly]["weekly_contracts"] = weekly
-        st.success("Weekly contracts updated")
-
-    st.divider()
-    st.subheader("Update Contracts Owned")
-    ct_owned = st.selectbox("Ticker", list(TARGET_ALLOC.keys()), key="owned_ticker")
-    owned = st.number_input("Contracts Owned", min_value=0, step=1, key="owned_num")
-    if st.button("Update Contracts Owned"):
-        etfs[ct_owned]["contracts_sold"] = owned
-        st.success("Contracts Owned updated")
-
-    st.divider()
-    st.subheader("Record Margin Debt")
-    margin_input = st.number_input("Current Margin ($)", min_value=0.0, key="margin_input")
-    if st.button("Record"):
-        today = datetime.now().strftime("%Y-%m-%d")
-        history.append({"date": today, "portfolio_value": gross_value, "margin_debt": margin_input, "premium": 0})
-        st.success("Margin recorded")
+            history.append({"date": today, "portfolio_value": gross_value, "margin_debt": margin_input, "premium": 0})
+            save_data(etfs, history)
+            st.success("Margin recorded")
 
 # Growth Chart
 st.subheader("Growth, Margin & Premium Tracker")
@@ -176,7 +194,7 @@ if history:
     fig.update_layout(height=600, title="Path to $1M + $100k/month Premium")
     st.plotly_chart(fig, use_container_width=True)
 else:
-    st.info("Record margin or premium to start tracking")
+    st.info("Record margin or premium to start tracking growth")
 
 if st.button("💾 Save All Data"):
     save_data(etfs, history)

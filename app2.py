@@ -2,8 +2,9 @@ import streamlit as st
 import yfinance as yf
 import pandas as pd
 import plotly.graph_objects as go
-from datetime import datetime
+import json  # ← THIS WAS MISSING – FIXES THE ERROR
 import os
+from datetime import datetime
 
 # === CONFIG ===
 st.set_page_config(page_title="Wealth Growth Pro → $1M", layout="wide", initial_sidebar_state="expanded")
@@ -26,7 +27,7 @@ if apply_btn:
         st.success(f"Username set: **{st.session_state.username}**")
         st.rerun()
 
-# Stop if no username
+# Stop if no username applied
 if "username" not in st.session_state or not st.session_state.username:
     st.info("👆 Please enter a username and click **APPLY** to begin. Your data will be saved under this name.")
     st.stop()
@@ -34,7 +35,7 @@ if "username" not in st.session_state or not st.session_state.username:
 username = st.session_state.username
 DATA_FILE = f"{username}_data.json"
 
-# === LOAD/SAVE PER USER (MOVED TO TOP) ===
+# === LOAD/SAVE PER USER ===
 def load_data():
     if os.path.exists(DATA_FILE):
         try:
@@ -66,7 +67,6 @@ def save_data(etfs, history, initial_capital, capital_additions):
     with open(DATA_FILE, "w") as f:
         json.dump(data, f)
 
-# Now load data after functions are defined
 etfs, history, initial_capital, capital_additions = load_data()
 
 # === GLOBAL RESET BUTTON ===

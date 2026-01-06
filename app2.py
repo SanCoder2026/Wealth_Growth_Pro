@@ -21,7 +21,7 @@ if "history" not in st.session_state:
 if "initial_capital" not in st.session_state:
     st.session_state.initial_capital = INITIAL_INVESTMENT_DEFAULT
 if "capital_additions" not in st.session_state:
-    st.session_state.capital_additions = []  # list of {"date": str, "amount": float}
+    st.session_state.capital_additions = []
 
 etfs = st.session_state.etfs
 history = st.session_state.history
@@ -40,7 +40,7 @@ if st.button("🔴 Reset All My Data"):
         st.session_state.initial_capital = INITIAL_INVESTMENT_DEFAULT
         st.session_state.capital_additions = []
         st.success("All data reset! Refresh the page.")
-        st.experimental_rerun()
+        st.rerun()
 
 # === PRICE FETCH ===
 @st.cache_data(ttl=300)
@@ -95,7 +95,7 @@ with st.expander("💰 Capital Management", expanded=False):
                 st.session_state.initial_capital = new_initial
                 st.session_state.initial_set = True
                 st.success(f"Initial capital set to ${new_initial:,.2f}")
-                st.experimental_rerun()
+                st.rerun()
         else:
             st.info(f"Initial capital: ${st.session_state.initial_capital:,.2f} (already set)")
 
@@ -112,7 +112,7 @@ with st.expander("💰 Capital Management", expanded=False):
                 today = datetime.now().strftime("%Y-%m-%d")
                 history.append({"date": today, "portfolio_value": gross_value, "margin_debt": margin, "premium": 0})
                 st.success(f"Added ${add_amount:,.2f} on {add_date}")
-                st.experimental_rerun()
+                st.rerun()
 
 # === MANAGE TICKERS ===
 with st.expander("📈 Manage Tickers & Allocations", expanded=False):
@@ -150,7 +150,6 @@ with st.expander("📈 Manage Tickers & Allocations", expanded=False):
     if abs(target_sum - 1.0) > 0.001:
         st.warning(f"Total target allocation is {target_sum*100:.1f}% (should be 100%). Will normalize on save.")
 
-    # Temporary storage for new targets
     new_targets = {}
     for t in list(etfs.keys()):
         col_t1, col_t2 = st.columns([3, 1])
@@ -176,7 +175,7 @@ with st.expander("📈 Manage Tickers & Allocations", expanded=False):
             for t in etfs:
                 etfs[t]["target_pct"] /= current_sum
         st.success("Targets saved and normalized to 100%")
-        st.experimental_rerun()
+        st.rerun()
 
 # Holdings Table
 rows = []
@@ -282,7 +281,6 @@ if history:
     if show_goal:
         fig.add_hline(y=PREMIUM_TARGET_MONTHLY, line_dash="dash", line_color="purple", annotation_text="$100k/month Goal")
 
-    # Capital additions as markers
     for add in capital_additions:
         fig.add_vline(x=add["date"], line_dash="dot", line_color="green", annotation_text=f"+${add['amount']:,.0f}")
 

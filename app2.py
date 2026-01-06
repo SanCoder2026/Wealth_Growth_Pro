@@ -5,7 +5,7 @@ import plotly.graph_objects as go
 import json
 import os
 from datetime import datetime
-from st_paywall import add_auth  # Subscription paywall
+#from st_paywall import add_auth  # Subscription paywall
 
 # === CONFIG ===
 st.set_page_config(page_title="Wealth Growth Pro → $1M", layout="wide")
@@ -15,12 +15,12 @@ TARGET_ALLOC = {"TQQQ": 0.40, "SOXL": 0.35, "UPRO": 0.25}
 PREMIUM_TARGET_MONTHLY = 100000.0  # $100k/month goal
 
 # === SUBSCRIPTION PAYWALL ===
-add_auth(required=True)
+#add_auth(required=True)
 
-if st.session_state.get("user_subscribed", False):
-    st.success(f"Welcome back, {st.session_state.get('email', 'Subscriber')}! Full access unlocked.")
-else:
-    st.info("Subscribe to unlock the full Wealth Growth Pro tracker.")
+#if st.session_state.get("user_subscribed", False):
+#    st.success(f"Welcome back, {st.session_state.get('email', 'Subscriber')}! Full access unlocked.")
+#else:
+#    st.info("Subscribe to unlock the full Wealth Growth Pro tracker.")
 
 # === GLOBAL RESET BUTTON ===
 if st.button("🔴 Global Reset (Delete All Data)"):
@@ -194,4 +194,5 @@ else:
 
 if st.button("💾 Save All Data"):
     save_data(etfs, history)
+
     st.success("All data saved!")

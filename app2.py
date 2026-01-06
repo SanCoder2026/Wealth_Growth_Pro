@@ -150,31 +150,31 @@ with st.expander("📈 Manage Tickers & Allocations", expanded=False):
     if abs(target_sum - 1.0) > 0.001:
         st.warning(f"Total target allocation is {target_sum*100:.1f}% (should be 100%). Will normalize on save.")
 
+    # Temporary storage for new targets
+    new_targets = {}
     for t in list(etfs.keys()):
         col_t1, col_t2 = st.columns([3, 1])
         with col_t1:
             st.write(t)
         with col_t2:
             current_pct = etfs.get(t, {}).get("target_pct", 0.0) * 100
-            key = f"tgt_input_{t}"
-            if key not in st.session_state:
-                st.session_state[key] = current_pct
             new_pct = st.number_input(
                 f"Target % for {t}",
                 min_value=0.0,
                 max_value=100.0,
-                value=float(st.session_state[key]),
+                value=current_pct,
                 step=0.1,
-                key=key
+                key=f"tgt_{t}"
             )
-            etfs[t]["target_pct"] = new_pct / 100
-            st.session_state[key] = new_pct
+            new_targets[t] = new_pct / 100
 
     if st.button("Save & Normalize Targets"):
-        current_sum = sum(etfs.get(t, {}).get("target_pct", 0.0) for t in etfs)
+        for t, pct in new_targets.items():
+            etfs[t]["target_pct"] = pct
+        current_sum = sum(etfs[t]["target_pct"] for t in etfs)
         if current_sum > 0:
             for t in etfs:
-                etfs[t]["target_pct"] = etfs[t]["target_pct"] / current_sum
+                etfs[t]["target_pct"] /= current_sum
         st.success("Targets saved and normalized to 100%")
         st.experimental_rerun()
 

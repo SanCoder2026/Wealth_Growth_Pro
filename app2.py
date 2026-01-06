@@ -2,8 +2,6 @@ import streamlit as st
 import yfinance as yf
 import pandas as pd
 import plotly.graph_objects as go
-import json
-import os
 from datetime import datetime
 
 # === CONFIG ===
@@ -11,15 +9,32 @@ st.set_page_config(page_title="Wealth Growth Pro → $1M", layout="wide", initia
 INITIAL_INVESTMENT_DEFAULT = 81000.0
 PREMIUM_TARGET_MONTHLY = 100000.0
 
-# === USERNAME INPUT (AT TOP) ===
+# === USERNAME INPUT WITH APPLY BUTTON ===
 st.title("🚀 Wealth Growth Pro → $1M")
-username = st.text_input("Enter your username to load/save your data", value="", key="username_input")
 
-if not username:
-    st.info("Enter a username to start (your data will be saved under this name)")
+if "username" not in st.session_state:
+    st.session_state.username = ""
+
+col_user1, col_user2 = st.columns([3, 1])
+with col_user1:
+    username_input = st.text_input("Enter your username to load/save your data", value=st.session_state.username, key="username_input")
+with col_user2:
+    apply_username = st.button("Apply", type="primary")
+
+if apply_username:
+    if username_input.strip() == "":
+        st.error("Username cannot be empty")
+    else:
+        st.session_state.username = username_input.strip()
+        st.success(f"Username set to: {st.session_state.username}")
+        st.rerun()
+
+if not st.session_state.username:
+    st.info("👆 Enter a username and click **Apply** to start (your data will be saved under this name)")
     st.stop()
 
-DATA_FILE = f"{username}_data.json"  # Unique file per username
+username = st.session_state.username
+DATA_FILE = f"{username}_data.json"
 
 # === LOAD/SAVE PER USER ===
 def load_data():
@@ -34,7 +49,6 @@ def load_data():
                 return etfs, history, initial_capital, capital_additions
         except:
             pass
-    # Default blank
     return (
         {"TQQQ": {"shares": 0.0, "cost_basis": 0.0, "contracts_sold": 0, "weekly_contracts": 0, "target_pct": 0.40},
          "SOXL": {"shares": 0.0, "cost_basis": 0.0, "contracts_sold": 0, "weekly_contracts": 0, "target_pct": 0.35},
@@ -91,6 +105,8 @@ total_premium_last4 = sum(h.get("premium", 0) for h in history[-4:])
 monthly_premium_est = total_premium_last4
 
 # === DASHBOARD ===
+st.success(f"Welcome, {username}! Full access")
+
 col1, col2, col3, col4, col5 = st.columns(5)
 col1.metric("Gross Portfolio", f"${gross_value:,.2f}")
 col2.metric("Current Margin", f"${margin:,.2f}")
@@ -99,6 +115,106 @@ col4.metric("Total Capital Added", f"${total_capital_added:,.2f}")
 col5.metric("Progress to $1M", f"{pct_to_m:.2f}%")
 
 st.caption(f"Monthly Premium Estimate: ${monthly_premium_est:,.2f} (Target: ${PREMIUM_TARGET_MONTHLY:,.0f})")
+
+# === CAPITAL MANAGEMENT ===
+with st.expander("💰 Capital Management", expanded=False):
+    col_cap1, col_cap2 = st.columns(2)
+
+    with col_cap1:
+        st.subheader("Set Initial Capital")
+        if "initial_set" not in st.session_state:
+            st.session_state.initial_set = False
+        if not st.session_state.initial_set:
+            new_initial = st.number_input("Initial Capital Amount", min_value=0.0, value=initial_capital, step=1000.0)
+            if st.button("Confirm Initial Capital"):
+                st.session_state.initial_capital = new_initial
+                st.session_state.initial_set = True
+                save_data(etfs, history, new_initial, capital_additions)
+                st.success(f"Initial capital set to ${new_initial:,.2f}")
+                st.rerun()
+        else:
+            st.info(f"Initial capital: ${st.session_state.initial_capital:,.2f} (already set)")
+
+    with col_cap2:
+        st.subheader("Add New Capital")
+        add_amount = st.number_input("Amount to Add ($)", min_value=0.0, step=1000.0)
+        add_date = st.date_input("Date", value=datetime.now().date())
+        if st.button("Add Capital"):
+            if add_amount > 0:
+                capital_additions.append({
+                    "date": add_date.strftime("%Y-%m-%d"),
+                    "amount": add_amount
+                })
+                today = datetime.now().strftime("%Y-%m-%d")
+                history.append({"date": today, "portfolio_value": gross_value, "margin_debt": margin, "premium": 0})
+                save_data(etfs, history, initial_capital, capital_additions)
+                st.success(f"Added ${add_amount:,.2f} on {add_date}")
+                st.rerun()
+
+# === MANAGE TICKERS ===
+with st.expander("📈 Manage Tickers & Allocations", expanded=False):
+    st.subheader("Add New Ticker")
+    new_ticker = st.text_input("Enter Ticker Symbol (e.g., NVDA, TSLA)").strip().upper()
+    if st.button("Add Ticker") and new_ticker:
+        if new_ticker in etfs:
+            st.warning(f"{new_ticker} already exists")
+        else:
+            suggested_pct = 0.10
+            try:
+                hist = yf.Ticker(new_ticker).history(period="1mo")
+                if not hist.empty:
+                    vol = hist["Close"].pct_change().std() * (252 ** 0.5)
+                    if vol > 0.60:
+                        suggested_pct = 0.10
+                    elif vol > 0.40:
+                        suggested_pct = 0.15
+                    else:
+                        suggested_pct = 0.25
+            except:
+                pass
+
+            etfs[new_ticker] = {
+                "shares": 0.0,
+                "cost_basis": 0.0,
+                "contracts_sold": 0,
+                "weekly_contracts": 0,
+                "target_pct": suggested_pct
+            }
+            save_data(etfs, history, initial_capital, capital_additions)
+            st.success(f"{new_ticker} added with suggested target {suggested_pct*100:.1f}%")
+
+    st.subheader("Edit Target Allocations")
+    target_sum = sum(etfs.get(t, {}).get("target_pct", 0.0) for t in etfs)
+    if abs(target_sum - 1.0) > 0.001:
+        st.warning(f"Total target allocation is {target_sum*100:.1f}% (should be 100%). Will normalize on save.")
+
+    new_targets = {}
+    for t in list(etfs.keys()):
+        col_t1, col_t2 = st.columns([3, 1])
+        with col_t1:
+            st.write(t)
+        with col_t2:
+            current_pct = etfs.get(t, {}).get("target_pct", 0.0) * 100
+            new_pct = st.number_input(
+                f"Target % for {t}",
+                min_value=0.0,
+                max_value=100.0,
+                value=current_pct,
+                step=0.1,
+                key=f"tgt_{t}"
+            )
+            new_targets[t] = new_pct / 100
+
+    if st.button("Save & Normalize Targets"):
+        for t, pct in new_targets.items():
+            etfs[t]["target_pct"] = pct
+        current_sum = sum(etfs[t]["target_pct"] for t in etfs)
+        if current_sum > 0:
+            for t in etfs:
+                etfs[t]["target_pct"] /= current_sum
+        save_data(etfs, history, initial_capital, capital_additions)
+        st.success("Targets saved and normalized to 100%")
+        st.rerun()
 
 # Holdings Table
 rows = []
@@ -216,7 +332,3 @@ if history:
     st.plotly_chart(fig, use_container_width=True)
 else:
     st.info("Record margin, premium or capital to start tracking")
-
-if st.button("💾 Save All Data"):
-    save_data(etfs, history, initial_capital, capital_additions)
-    st.success("All data saved!")

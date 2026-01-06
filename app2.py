@@ -55,7 +55,6 @@ def fetch_prices(tickers_list):
     except:
         return {t: 0 for t in tickers_list}
 
-# Get current tickers
 current_tickers = list(etfs.keys())
 prices = fetch_prices(current_tickers)
 
@@ -147,7 +146,7 @@ with st.expander("📈 Manage Tickers & Allocations", expanded=False):
             st.success(f"{new_ticker} added with suggested target {suggested_pct*100:.1f}%")
 
     st.subheader("Edit Target Allocations")
-    target_sum = sum(etfs[t].get("target_pct", 0.0) for t in etfs)
+    target_sum = sum(etfs.get(t, {}).get("target_pct", 0.0) for t in etfs)
     if abs(target_sum - 1.0) > 0.001:
         st.warning(f"Total target allocation is {target_sum*100:.1f}% (should be 100%). Will normalize on save.")
 
@@ -156,7 +155,7 @@ with st.expander("📈 Manage Tickers & Allocations", expanded=False):
         with col_t1:
             st.write(t)
         with col_t2:
-            current_pct = etfs[t]["target_pct"] * 100
+            current_pct = etfs.get(t, {}).get("target_pct", 0.0) * 100
             key = f"tgt_input_{t}"
             if key not in st.session_state:
                 st.session_state[key] = current_pct
@@ -172,10 +171,10 @@ with st.expander("📈 Manage Tickers & Allocations", expanded=False):
             st.session_state[key] = new_pct
 
     if st.button("Save & Normalize Targets"):
-        current_sum = sum(etfs[t]["target_pct"] for t in etfs)
+        current_sum = sum(etfs.get(t, {}).get("target_pct", 0.0) for t in etfs)
         if current_sum > 0:
             for t in etfs:
-                etfs[t]["target_pct"] /= current_sum
+                etfs[t]["target_pct"] = etfs[t]["target_pct"] / current_sum
         st.success("Targets saved and normalized to 100%")
         st.experimental_rerun()
 
@@ -217,7 +216,7 @@ with st.expander("📊 Data Entry (Expand to update – Collapse when done)", ex
         premium = st.number_input("Premium Received ($)", min_value=0.0, step=10.0)
         if st.button("Suggest Reinvestment") and premium > 0:
             total_val = gross_value
-            deviations = {t: total_val * etfs[t].get("target_pct", 0) - (etfs[t]["shares"] * prices.get(t, 0)) for t in etfs}
+            deviations = {t: total_val * etfs[t].get("target_pct", 0.0) - (etfs[t]["shares"] * prices.get(t, 0)) for t in etfs}
             best = max(deviations, key=deviations.get)
             shares_buy = premium / prices.get(best, 1)
             st.success(f"Buy **{shares_buy:.4f} {best}** @ ${prices.get(best, 0):.4f} (uses full ${premium:.2f})")

@@ -2,8 +2,9 @@ import streamlit as st
 import yfinance as yf
 import pandas as pd
 import plotly.graph_objects as go
-from datetime import datetime
+import json  # ← THIS WAS MISSING – FIXES THE ERROR
 import os
+from datetime import datetime
 
 # === CONFIG ===
 st.set_page_config(page_title="Wealth Growth Pro → $1M", layout="wide", initial_sidebar_state="expanded")
@@ -298,7 +299,7 @@ with st.expander("📊 Data Entry (Expand to update – Collapse when done)", ex
             save_data(etfs, history, initial_capital, capital_additions)
             st.success("Margin recorded")
 
-# Growth Chart with TradingView-style range selector and slider
+# Growth Chart with Toggles
 st.subheader("Growth, Margin & Premium Tracker")
 
 show_margin = st.checkbox("Show Margin Debt", value=False)
@@ -323,35 +324,11 @@ if history:
     if show_goal:
         fig.add_hline(y=PREMIUM_TARGET_MONTHLY, line_dash="dash", line_color="purple", annotation_text="$100k/month Goal")
 
-    # Capital additions as markers
     for add in capital_additions:
         add_date = pd.to_datetime(add["date"])
         fig.add_vline(x=add_date, line_dash="dot", line_color="green", annotation_text=f"+${add['amount']:,.0f}")
 
-    # TradingView-style range selector + slider
-    fig.update_layout(
-        height=600,
-        title="Path to $1M + $100k/month Premium",
-        xaxis=dict(
-            rangeselector=dict(
-                buttons=list([
-                    dict(count=1, label="1D", step="day", stepmode="backward"),
-                    dict(count=7, label="1W", step="day", stepmode="backward"),
-                    dict(count=1, label="1M", step="month", stepmode="backward"),
-                    dict(count=3, label="3M", step="month", stepmode="backward"),
-                    dict(count=6, label="6M", step="month", stepmode="backward"),
-                    dict(count=1, label="YTD", step="year", stepmode="todate"),
-                    dict(count=1, label="1Y", step="year", stepmode="backward"),
-                    dict(step="all", label="All")
-                ]),
-                bgcolor="lightgrey",
-                activecolor="grey"
-            ),
-            rangeslider=dict(visible=True),
-            type="date"
-        )
-    )
-
+    fig.update_layout(height=600, title="Path to $1M + $100k/month Premium")
     st.plotly_chart(fig, use_container_width=True)
 else:
     st.info("Record margin, premium or capital to start tracking")

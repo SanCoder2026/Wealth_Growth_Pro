@@ -21,7 +21,7 @@ if "history" not in st.session_state:
 if "initial_capital" not in st.session_state:
     st.session_state.initial_capital = INITIAL_INVESTMENT_DEFAULT
 if "capital_additions" not in st.session_state:
-    st.session_state.capital_additions = []  # list of {"date": str, "amount": float}
+    st.session_state.capital_additions = []
 
 etfs = st.session_state.etfs
 history = st.session_state.history
@@ -281,15 +281,14 @@ if history:
     if show_goal:
         fig.add_hline(y=PREMIUM_TARGET_MONTHLY, line_dash="dash", line_color="purple", annotation_text="$100k/month Goal")
 
-    # Capital additions as markers (fixed with pd.to_datetime)
+    # Capital additions as markers (safe version)
     for add in capital_additions:
         add_date = pd.to_datetime(add["date"])
         fig.add_vline(
             x=add_date,
             line_dash="dot",
             line_color="green",
-            annotation_text=f"+${add['amount']:,.0f}",
-            annotation_position="top right"
+            annotation_text=f"+${add['amount']:,.0f}"
         )
 
     fig.update_layout(height=600, title="Path to $1M + $100k/month Premium")

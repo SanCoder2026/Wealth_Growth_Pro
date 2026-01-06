@@ -2,18 +2,15 @@ import streamlit as st
 import yfinance as yf
 import pandas as pd
 import plotly.graph_objects as go
-import json
-import os
 from datetime import datetime
 
 # === CONFIG ===
 st.set_page_config(page_title="Wealth Growth Pro → $1M", layout="wide", initial_sidebar_state="expanded")
-DATA_FILE = "tracker_data.json"
 INITIAL_INVESTMENT = 81000.0
 TARGET_ALLOC = {"TQQQ": 0.40, "SOXL": 0.35, "UPRO": 0.25}
-PREMIUM_TARGET_MONTHLY = 100000.0  # $100k/month goal
+PREMIUM_TARGET_MONTHLY = 100000.0
 
-# === SUBSCRIPTION PAYWALL (COMMENTED OUT FOR NOW) ===
+# === SUBSCRIPTION PAYWALL (COMMENTED OUT) ===
 # from st_paywall import add_auth
 # add_auth(required=True)
 # if st.session_state.get("user_subscribed", False):
@@ -23,38 +20,21 @@ PREMIUM_TARGET_MONTHLY = 100000.0  # $100k/month goal
 
 st.success("Wealth Growth Pro — Full Access")
 
-# === GLOBAL RESET BUTTON ===
-if st.button("🔴 Global Reset (Delete All Data)"):
-    if st.button("Confirm Reset — This Cannot Be Undone"):
-        if os.path.exists(DATA_FILE):
-            os.remove(DATA_FILE)
-        st.success("All data reset! Reload the app.")
-        st.experimental_rerun()
+# === PER-SESSION DATA (NO SHARED FILE) ===
+if "etfs" not in st.session_state:
+    st.session_state.etfs = {t: {"shares": 0.0, "cost_basis": 0.0, "contracts_sold": 0, "weekly_contracts": 0} for t in TARGET_ALLOC}
+if "history" not in st.session_state:
+    st.session_state.history = []
 
-# === DATA LOAD/SAVE ===
-def load_data():
-    if os.path.exists(DATA_FILE):
-        try:
-            with open(DATA_FILE, "r") as f:
-                data = json.load(f)
-                etfs = data.get("etfs", {})
-                history = data.get("history", [])
-                for t in TARGET_ALLOC:
-                    if t not in etfs:
-                        etfs[t] = {"shares": 0.0, "cost_basis": 0.0, "contracts_sold": 0, "weekly_contracts": 0}
-                    else:
-                        if "weekly_contracts" not in etfs[t]:
-                            etfs[t]["weekly_contracts"] = 0
-                return etfs, history
-        except:
-            pass
-    return {t: {"shares": 0.0, "cost_basis": 0.0, "contracts_sold": 0, "weekly_contracts": 0} for t in TARGET_ALLOC}, []
+etfs = st.session_state.etfs
+history = st.session_state.history
 
-def save_data(etfs, history):
-    with open(DATA_FILE, "w") as f:
-        json.dump({"etfs": etfs, "history": history}, f)
-
-etfs, history = load_data()
+# === GLOBAL RESET BUTTON (CLEARS CURRENT SESSION ONLY) ===
+if st.button("🔴 Reset My Session Data"):
+    st.session_state.etfs = {t: {"shares": 0.0, "cost_basis": 0.0, "contracts_sold": 0, "weekly_contracts": 0} for t in TARGET_ALLOC}
+    st.session_state.history = []
+    st.success("Your session data reset! Refresh to see blank state.")
+    st.experimental_rerun()
 
 # === PRICE FETCH ===
 @st.cache_data(ttl=300)
@@ -72,7 +52,7 @@ def fetch_prices():
 prices = fetch_prices()
 
 # === CALCULATIONS ===
-gross_value = sum(etfs.get(t, {"shares": 0.0})["shares"] * prices.get(t, 0) for t in TARGET_ALLOC)
+gross_value = sum(etfs[t]["shares"] * prices.get(t, 0) for t in TARGET_ALLOC)
 margin = history[-1]["margin_debt"] if history else 0
 net_equity = gross_value - margin
 profit = net_equity - INITIAL_INVESTMENT
@@ -123,7 +103,7 @@ st.subheader("Current Holdings")
 st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
 
 # === DATA ENTRY SECTION (COLLAPSIBLE) ===
-with st.expander("📊 Data Entry (Expand to enter weekly updates – Collapse when done)", expanded=True):
+with st.expander("📊 Data Entry (Expand to update – Collapse when done)", expanded=True):
     col_left, col_right = st.columns(2)
 
     with col_left:
@@ -149,7 +129,6 @@ with st.expander("📊 Data Entry (Expand to enter weekly updates – Collapse w
                 etfs[ticker]["cost_basis"] = new_basis
                 today = datetime.now().strftime("%Y-%m-%d")
                 history.append({"date": today, "portfolio_value": gross_value, "margin_debt": margin, "premium": premium})
-                save_data(etfs, history)
                 st.success("Purchase added!")
 
     with col_right:
@@ -158,14 +137,12 @@ with st.expander("📊 Data Entry (Expand to enter weekly updates – Collapse w
         weekly = st.number_input("Weekly Contracts", min_value=0, step=1, key="weekly_num")
         if st.button("Update Weekly"):
             etfs[ct_weekly]["weekly_contracts"] = weekly
-            save_data(etfs, history)
             st.success("Weekly contracts updated")
 
         ct_owned = st.selectbox("Ticker (Owned)", list(TARGET_ALLOC.keys()), key="owned_ticker")
         owned = st.number_input("Contracts Owned", min_value=0, step=1, key="owned_num")
         if st.button("Update Contracts Owned"):
             etfs[ct_owned]["contracts_sold"] = owned
-            save_data(etfs, history)
             st.success("Contracts Owned updated")
 
         st.subheader("Record Margin Debt")
@@ -173,7 +150,6 @@ with st.expander("📊 Data Entry (Expand to enter weekly updates – Collapse w
         if st.button("Record"):
             today = datetime.now().strftime("%Y-%m-%d")
             history.append({"date": today, "portfolio_value": gross_value, "margin_debt": margin_input, "premium": 0})
-            save_data(etfs, history)
             st.success("Margin recorded")
 
 # Growth Chart
@@ -195,7 +171,3 @@ if history:
     st.plotly_chart(fig, use_container_width=True)
 else:
     st.info("Record margin or premium to start tracking growth")
-
-if st.button("💾 Save All Data"):
-    save_data(etfs, history)
-    st.success("All data saved!")

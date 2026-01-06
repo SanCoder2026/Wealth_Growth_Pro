@@ -123,12 +123,11 @@ with st.expander("📈 Manage Tickers & Allocations", expanded=False):
         if new_ticker in etfs:
             st.warning(f"{new_ticker} already exists")
         else:
-            # Smart allocation suggestion
-            suggested_pct = 0.10  # default
+            suggested_pct = 0.10
             try:
                 hist = yf.Ticker(new_ticker).history(period="1mo")
                 if not hist.empty:
-                    vol = hist["Close"].pct_change().std() * (252 ** 0.5)  # annualized vol
+                    vol = hist["Close"].pct_change().std() * (252 ** 0.5)
                     if vol > 0.60:
                         suggested_pct = 0.10
                     elif vol > 0.40:
@@ -148,7 +147,7 @@ with st.expander("📈 Manage Tickers & Allocations", expanded=False):
             st.success(f"{new_ticker} added with suggested target {suggested_pct*100:.1f}%")
 
     st.subheader("Edit Target Allocations")
-    target_sum = sum(etfs[t].get("target_pct", 0) for t in etfs)  # Safe get
+    target_sum = sum(etfs[t].get("target_pct", 0.0) for t in etfs)
     if abs(target_sum - 1.0) > 0.001:
         st.warning(f"Total target allocation is {target_sum*100:.1f}% (should be 100%). Will normalize on save.")
 
@@ -157,15 +156,26 @@ with st.expander("📈 Manage Tickers & Allocations", expanded=False):
         with col_t1:
             st.write(t)
         with col_t2:
-            current_target = etfs[t].get("target_pct", 0) * 100
-            new_pct = st.number_input(f"Target % for {t}", min_value=0.0, max_value=100.0, value=current_target, step=0.1, key=f"tgt_{t}")
+            current_pct = etfs[t]["target_pct"] * 100
+            key = f"tgt_input_{t}"
+            if key not in st.session_state:
+                st.session_state[key] = current_pct
+            new_pct = st.number_input(
+                f"Target % for {t}",
+                min_value=0.0,
+                max_value=100.0,
+                value=float(st.session_state[key]),
+                step=0.1,
+                key=key
+            )
             etfs[t]["target_pct"] = new_pct / 100
+            st.session_state[key] = new_pct
 
     if st.button("Save & Normalize Targets"):
-        current_sum = sum(etfs[t].get("target_pct", 0) for t in etfs)
+        current_sum = sum(etfs[t]["target_pct"] for t in etfs)
         if current_sum > 0:
             for t in etfs:
-                etfs[t]["target_pct"] = etfs[t]["target_pct"] / current_sum
+                etfs[t]["target_pct"] /= current_sum
         st.success("Targets saved and normalized to 100%")
         st.experimental_rerun()
 
@@ -178,7 +188,7 @@ for t in etfs:
     purchase_value = shares * d["cost_basis"]
     current_value = shares * prices.get(t, 0)
     current_pct = current_value / total_val * 100
-    target_pct = d.get("target_pct", 0) * 100
+    target_pct = d.get("target_pct", 0.0) * 100
     contracts_owned = d["contracts_sold"]
     weekly_contracts = d["weekly_contracts"]
     otm = 0.12 if "SOXL" in t else 0.09 if "TQQQ" in t else 0.07

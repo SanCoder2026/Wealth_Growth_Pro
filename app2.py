@@ -3,34 +3,32 @@ import yfinance as yf
 import pandas as pd
 import plotly.graph_objects as go
 from datetime import datetime
+import os
 
 # === CONFIG ===
 st.set_page_config(page_title="Wealth Growth Pro → $1M", layout="wide", initial_sidebar_state="expanded")
 INITIAL_INVESTMENT_DEFAULT = 81000.0
 PREMIUM_TARGET_MONTHLY = 100000.0
 
-# === USERNAME INPUT WITH APPLY BUTTON ===
-st.title("🚀 Wealth Growth Pro → $1M")
-
-if "username" not in st.session_state:
-    st.session_state.username = ""
-
+# === USERNAME SECTION WITH CLEAR MARKER & APPLY BUTTON ===
+st.markdown("### 👤 User Name Entry")
 col_user1, col_user2 = st.columns([3, 1])
 with col_user1:
-    username_input = st.text_input("Enter your username to load/save your data", value=st.session_state.username, key="username_input")
+    username_input = st.text_input("User Name :", value="", placeholder="Enter your username", key="username_input", label_visibility="collapsed")
 with col_user2:
-    apply_username = st.button("Apply", type="primary")
+    apply_btn = st.button("APPLY", type="primary", use_container_width=True)
 
-if apply_username:
-    if username_input.strip() == "":
-        st.error("Username cannot be empty")
+if apply_btn:
+    if not username_input.strip():
+        st.error("Username cannot be empty!")
     else:
         st.session_state.username = username_input.strip()
-        st.success(f"Username set to: {st.session_state.username}")
+        st.success(f"Username set: **{st.session_state.username}**")
         st.rerun()
 
-if not st.session_state.username:
-    st.info("👆 Enter a username and click **Apply** to start (your data will be saved under this name)")
+# Stop the app until username is applied
+if "username" not in st.session_state or not st.session_state.username:
+    st.info("👆 Please enter a username and click **APPLY** to begin. Your data will be saved under this name.")
     st.stop()
 
 username = st.session_state.username
@@ -47,8 +45,9 @@ def load_data():
                 initial_capital = data.get("initial_capital", INITIAL_INVESTMENT_DEFAULT)
                 capital_additions = data.get("capital_additions", [])
                 return etfs, history, initial_capital, capital_additions
-        except:
-            pass
+        except Exception as e:
+            st.warning(f"Could not load data for {username}: {e}")
+    # Default blank
     return (
         {"TQQQ": {"shares": 0.0, "cost_basis": 0.0, "contracts_sold": 0, "weekly_contracts": 0, "target_pct": 0.40},
          "SOXL": {"shares": 0.0, "cost_basis": 0.0, "contracts_sold": 0, "weekly_contracts": 0, "target_pct": 0.35},
@@ -73,8 +72,9 @@ etfs, history, initial_capital, capital_additions = load_data()
 # === GLOBAL RESET BUTTON ===
 if st.button(f"🔴 Reset {username}'s Data"):
     if st.button("Confirm Reset — This cannot be undone"):
-        os.remove(DATA_FILE) if os.path.exists(DATA_FILE) else None
-        st.success("Your data reset! Refresh the page.")
+        if os.path.exists(DATA_FILE):
+            os.remove(DATA_FILE)
+        st.success("Your data has been reset! Refresh the page.")
         st.rerun()
 
 # === PRICE FETCH ===

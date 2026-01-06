@@ -26,7 +26,7 @@ if apply_btn:
         st.success(f"Username set: **{st.session_state.username}**")
         st.rerun()
 
-# Stop the app until username is applied
+# Stop if no username
 if "username" not in st.session_state or not st.session_state.username:
     st.info("👆 Please enter a username and click **APPLY** to begin. Your data will be saved under this name.")
     st.stop()
@@ -34,7 +34,7 @@ if "username" not in st.session_state or not st.session_state.username:
 username = st.session_state.username
 DATA_FILE = f"{username}_data.json"
 
-# === LOAD/SAVE PER USER ===
+# === LOAD/SAVE PER USER (MOVED TO TOP) ===
 def load_data():
     if os.path.exists(DATA_FILE):
         try:
@@ -46,8 +46,7 @@ def load_data():
                 capital_additions = data.get("capital_additions", [])
                 return etfs, history, initial_capital, capital_additions
         except Exception as e:
-            st.warning(f"Could not load data for {username}: {e}")
-    # Default blank
+            st.warning(f"Could not load data: {e}")
     return (
         {"TQQQ": {"shares": 0.0, "cost_basis": 0.0, "contracts_sold": 0, "weekly_contracts": 0, "target_pct": 0.40},
          "SOXL": {"shares": 0.0, "cost_basis": 0.0, "contracts_sold": 0, "weekly_contracts": 0, "target_pct": 0.35},
@@ -67,6 +66,7 @@ def save_data(etfs, history, initial_capital, capital_additions):
     with open(DATA_FILE, "w") as f:
         json.dump(data, f)
 
+# Now load data after functions are defined
 etfs, history, initial_capital, capital_additions = load_data()
 
 # === GLOBAL RESET BUTTON ===

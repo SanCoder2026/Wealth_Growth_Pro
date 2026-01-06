@@ -1,0 +1,21 @@
+{
+  "name": "Wealth Growth Pro",
+  "short_name": "WealthPro",
+  "description": "Covered Call Tracker → $1M with TQQQ/SOXL/UPRO",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#0E1117",
+  "theme_color": "#00FF00",
+  "icons": [
+    {
+      "src": "https://via.placeholder.com/192x192/00FF00/000000?text=WGP",
+      "sizes": "192x192",
+      "type": "image/png"
+    },
+    {
+      "src": "https://via.placeholder.com/512x512/00FF00/000000?text=WGP",
+      "sizes": "512x512",
+      "type": "image/png"
+    }
+  ]
+}

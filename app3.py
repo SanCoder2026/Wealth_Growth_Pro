@@ -50,12 +50,12 @@ if "ALPACA_API_KEY" in st.secrets and "ALPACA_SECRET_KEY" in st.secrets:
     trading_client = TradingClient(st.secrets["ALPACA_API_KEY"], st.secrets["ALPACA_SECRET_KEY"], paper=True)
     try:
         account = trading_client.get_account()
-        st.sidebar.success(f"Connected to Alpaca Paper: ${float(account.cash):,.2f} cash")
+        st.sidebar.success(f"Connected to Alpaca Paper: ${float(account.cash):,.2f} cash available")
     except Exception as e:
         st.sidebar.error(f"Alpaca connection failed: {e}")
         trading_client = None
 else:
-    st.sidebar.warning("Add ALPACA_API_KEY and ALPACA_SECRET_KEY in Secrets for paper trading")
+    st.sidebar.warning("Add ALPACA_API_KEY and ALPACA_SECRET_KEY in Streamlit Secrets for paper trading")
     trading_client = None
 
 # === PRICE FETCH (Alpaca first, fallback to yfinance) ===
@@ -63,8 +63,8 @@ else:
 def fetch_prices(tickers_list):
     if trading_client:
         try:
-            quotes = trading_client.get_quotes(tickers_list)
-            prices = {q.symbol: round(q.ap, 4) for q in quotes}
+            quotes = trading_client.get_latest_quotes(tickers_list)
+            prices = {q.symbol: round(q.ask_price or q.bid_price or 0, 4) for q in quotes}
             return prices
         except:
             pass

@@ -3,90 +3,67 @@ import yfinance as yf
 import pandas as pd
 import plotly.graph_objects as go
 from datetime import datetime
-import alpaca_trade_api as tradeapi  # Official Alpaca SDK
-import os
+from alpaca.trading.client import TradingClient
+from alpaca.trading.requests import MarketOrderRequest
+from alpaca.trading.enums import OrderSide, TimeInForce
 
 # === CONFIG ===
 st.set_page_config(page_title="Wealth Growth Pro → $1M (Paper Trading)", layout="wide", initial_sidebar_state="expanded")
 INITIAL_INVESTMENT_DEFAULT = 81000.0
 PREMIUM_TARGET_MONTHLY = 100000.0
 
-# === USERNAME SECTION WITH APPLY BUTTON ===
-st.markdown("### 👤 User Name Entry")
-col_user1, col_user2 = st.columns([3, 1])
-with col_user1:
-    username_input = st.text_input("User Name :", value="", placeholder="Enter your username", key="username_input", label_visibility="collapsed")
-with col_user2:
-    apply_btn = st.button("APPLY", type="primary", use_container_width=True)
+# === SESSION STATE INITIALIZATION ===
+if "etfs" not in st.session_state:
+    st.session_state.etfs = {
+        "TQQQ": {"shares": 0.0, "cost_basis": 0.0, "contracts_sold": 0, "weekly_contracts": 0, "target_pct": 0.40},
+        "SOXL": {"shares": 0.0, "cost_basis": 0.0, "contracts_sold": 0, "weekly_contracts": 0, "target_pct": 0.35},
+        "UPRO": {"shares": 0.0, "cost_basis": 0.0, "contracts_sold": 0, "weekly_contracts": 0, "target_pct": 0.25}
+    }
+if "history" not in st.session_state:
+    st.session_state.history = []
+if "initial_capital" not in st.session_state:
+    st.session_state.initial_capital = INITIAL_INVESTMENT_DEFAULT
+if "capital_additions" not in st.session_state:
+    st.session_state.capital_additions = []
 
-if apply_btn:
-    if not username_input.strip():
-        st.error("Username cannot be empty!")
-    else:
-        st.session_state.username = username_input.strip()
-        st.success(f"Username set: **{st.session_state.username}**")
+etfs = st.session_state.etfs
+history = st.session_state.history
+initial_capital = st.session_state.initial_capital
+capital_additions = st.session_state.capital_additions
+
+# === GLOBAL RESET BUTTON ===
+if st.button("🔴 Reset All My Data"):
+    if st.button("Confirm Reset — This cannot be undone"):
+        st.session_state.etfs = {
+            "TQQQ": {"shares": 0.0, "cost_basis": 0.0, "contracts_sold": 0, "weekly_contracts": 0, "target_pct": 0.40},
+            "SOXL": {"shares": 0.0, "cost_basis": 0.0, "contracts_sold": 0, "weekly_contracts": 0, "target_pct": 0.35},
+            "UPRO": {"shares": 0.0, "cost_basis": 0.0, "contracts_sold": 0, "weekly_contracts": 0, "target_pct": 0.25}
+        }
+        st.session_state.history = []
+        st.session_state.initial_capital = INITIAL_INVESTMENT_DEFAULT
+        st.session_state.capital_additions = []
+        st.success("All data reset! Refresh the page.")
         st.rerun()
 
-if "username" not in st.session_state or not st.session_state.username:
-    st.info("👆 Please enter a username and click **APPLY** to begin. Your data will be saved under this name.")
-    st.stop()
-
-username = st.session_state.username
-DATA_FILE = f"{username}_data.json"
-
-# === LOAD/SAVE PER USER ===
-def load_data():
-    if os.path.exists(DATA_FILE):
-        try:
-            with open(DATA_FILE, "r") as f:
-                data = json.load(f)
-                etfs = data.get("etfs", {})
-                history = data.get("history", [])
-                initial_capital = data.get("initial_capital", INITIAL_INVESTMENT_DEFAULT)
-                capital_additions = data.get("capital_additions", [])
-                return etfs, history, initial_capital, capital_additions
-        except:
-            pass
-    return (
-        {"TQQQ": {"shares": 0.0, "cost_basis": 0.0, "contracts_sold": 0, "weekly_contracts": 0, "target_pct": 0.40},
-         "SOXL": {"shares": 0.0, "cost_basis": 0.0, "contracts_sold": 0, "weekly_contracts": 0, "target_pct": 0.35},
-         "UPRO": {"shares": 0.0, "cost_basis": 0.0, "contracts_sold": 0, "weekly_contracts": 0, "target_pct": 0.25}},
-        [],
-        INITIAL_INVESTMENT_DEFAULT,
-        []
-    )
-
-def save_data(etfs, history, initial_capital, capital_additions):
-    data = {
-        "etfs": etfs,
-        "history": history,
-        "initial_capital": initial_capital,
-        "capital_additions": capital_additions
-    }
-    with open(DATA_FILE, "w") as f:
-        json.dump(data, f)
-
-etfs, history, initial_capital, capital_additions = load_data()
-
 # === ALPACA PAPER TRADING CONNECTION ===
-ALPACA_API_KEY = st.secrets.get("ALPACA_API_KEY", "")
-ALPACA_SECRET_KEY = st.secrets.get("ALPACA_SECRET_KEY", "")
-ALPACA_BASE_URL = "https://paper-api.alpaca.markets"
-
-if ALPACA_API_KEY and ALPACA_SECRET_KEY:
-    api = tradeapi.REST(ALPACA_API_KEY, ALPACA_SECRET_KEY, ALPACA_BASE_URL, api_version='v2')
-    account = api.get_account()
-    st.sidebar.success(f"Connected to Alpaca Paper Trading: ${float(account.cash):,.2f} cash")
+if "ALPACA_API_KEY" in st.secrets and "ALPACA_SECRET_KEY" in st.secrets:
+    trading_client = TradingClient(st.secrets["ALPACA_API_KEY"], st.secrets["ALPACA_SECRET_KEY"], paper=True)
+    try:
+        account = trading_client.get_account()
+        st.sidebar.success(f"Connected to Alpaca Paper: ${float(account.cash):,.2f} cash")
+    except Exception as e:
+        st.sidebar.error(f"Alpaca connection failed: {e}")
+        trading_client = None
 else:
-    st.sidebar.warning("Add ALPACA_API_KEY and ALPACA_SECRET_KEY in Streamlit Secrets for paper trading")
-    api = None
+    st.sidebar.warning("Add ALPACA_API_KEY and ALPACA_SECRET_KEY in Secrets for paper trading")
+    trading_client = None
 
-# === PRICE FETCH (fallback to yfinance if Alpaca not connected) ===
+# === PRICE FETCH (Alpaca first, fallback to yfinance) ===
 @st.cache_data(ttl=300)
 def fetch_prices(tickers_list):
-    if api:
+    if trading_client:
         try:
-            quotes = api.get_quotes(tickers_list)
+            quotes = trading_client.get_quotes(tickers_list)
             prices = {q.symbol: round(q.ap, 4) for q in quotes}
             return prices
         except:
@@ -171,23 +148,22 @@ with st.expander("📊 Data Entry (Expand to update – Collapse when done)", ex
             shares_buy = premium / prices.get(best, 1)
             st.success(f"Buy **{shares_buy:.4f} {best}** @ ${prices.get(best, 0):.4f} (uses full ${premium:.2f})")
 
-            if api and st.button(f"EXECUTE PAPER TRADE: Buy {shares_buy:.4f} {best}"):
+            if trading_client and st.button(f"EXECUTE PAPER TRADE: Buy {shares_buy:.4f} {best}"):
                 try:
-                    api.submit_order(
+                    order_data = MarketOrderRequest(
                         symbol=best,
                         qty=shares_buy,
-                        side='buy',
-                        type='market',
-                        time_in_force='gtc'
+                        side=OrderSide.BUY,
+                        time_in_force=TimeInForce.GTC
                     )
-                    st.success(f"Paper trade executed: Bought {shares_buy:.4f} {best}")
+                    trading_client.submit_order(order_data)
+                    st.success("Paper trade executed!")
                     # Update holdings
                     old = etfs[best]
                     new_shares = old["shares"] + shares_buy
                     new_basis = (old["shares"] * old["cost_basis"] + shares_buy * prices[best]) / new_shares
                     etfs[best]["shares"] = new_shares
                     etfs[best]["cost_basis"] = new_basis
-                    save_data(etfs, history, initial_capital, capital_additions)
                     st.rerun()
                 except Exception as e:
                     st.error(f"Trade failed: {e}")
@@ -205,7 +181,6 @@ with st.expander("📊 Data Entry (Expand to update – Collapse when done)", ex
                 etfs[ticker]["cost_basis"] = new_basis
                 today = datetime.now().strftime("%Y-%m-%d")
                 history.append({"date": today, "portfolio_value": gross_value, "margin_debt": margin, "premium": premium})
-                save_data(etfs, history, initial_capital, capital_additions)
                 st.success("Purchase added!")
 
     with col_right:
@@ -214,14 +189,12 @@ with st.expander("📊 Data Entry (Expand to update – Collapse when done)", ex
         weekly = st.number_input("Weekly Contracts", min_value=0, step=1, key="weekly_num")
         if st.button("Update Weekly"):
             etfs[ct_weekly]["weekly_contracts"] = weekly
-            save_data(etfs, history, initial_capital, capital_additions)
             st.success("Weekly contracts updated")
 
         ct_owned = st.selectbox("Ticker (Owned)", list(etfs.keys()), key="owned_ticker")
         owned = st.number_input("Contracts Owned", min_value=0, step=1, key="owned_num")
         if st.button("Update Contracts Owned"):
             etfs[ct_owned]["contracts_sold"] = owned
-            save_data(etfs, history, initial_capital, capital_additions)
             st.success("Contracts Owned updated")
 
         st.subheader("Record Margin Debt")
@@ -229,7 +202,6 @@ with st.expander("📊 Data Entry (Expand to update – Collapse when done)", ex
         if st.button("Record"):
             today = datetime.now().strftime("%Y-%m-%d")
             history.append({"date": today, "portfolio_value": gross_value, "margin_debt": margin_input, "premium": 0})
-            save_data(etfs, history, initial_capital, capital_additions)
             st.success("Margin recorded")
 
 # Growth Chart with Toggles

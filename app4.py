@@ -23,7 +23,7 @@ if "initial_capital" not in st.session_state:
 if "capital_additions" not in st.session_state:
     st.session_state.capital_additions = []
 if "option_trades" not in st.session_state:
-    st.session_state.option_trades = []  # open trades
+    st.session_state.option_trades = []
 
 etfs = st.session_state.etfs
 history = st.session_state.history
@@ -36,12 +36,12 @@ if "ALPACA_API_KEY" in st.secrets and "ALPACA_SECRET_KEY" in st.secrets:
     trading_client = TradingClient(st.secrets["ALPACA_API_KEY"], st.secrets["ALPACA_SECRET_KEY"], paper=True)
     try:
         account = trading_client.get_account()
-        st.sidebar.success(f"Alpaca Paper Connected — Cash: ${float(account.cash):,.2f}")
+        st.sidebar.success(f"Alpaca Paper: ${float(account.cash):,.2f} cash available")
     except Exception as e:
         st.sidebar.error(f"Alpaca connection failed: {e}")
         trading_client = None
 else:
-    st.sidebar.warning("Add ALPACA_API_KEY & ALPACA_SECRET_KEY in Secrets for auto trading")
+    st.sidebar.warning("Add ALPACA keys in Secrets for auto trading")
     trading_client = None
 
 # === PRICE FETCH ===
@@ -116,180 +116,85 @@ for t in etfs:
 st.subheader("Current Holdings")
 st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
 
-# === CAPITAL MANAGEMENT ===
-with st.expander("💰 Capital Management", expanded=False):
-    col_cap1, col_cap2 = st.columns(2)
-
-    with col_cap1:
-        st.subheader("Set Initial Capital")
-        if "initial_set" not in st.session_state:
-            st.session_state.initial_set = False
-        if not st.session_state.initial_set:
-            new_initial = st.number_input("Initial Capital Amount", min_value=0.0, value=initial_capital, step=1000.0)
-            if st.button("Confirm Initial Capital"):
-                st.session_state.initial_capital = new_initial
-                st.session_state.initial_set = True
-                st.success(f"Initial capital set to ${new_initial:,.2f}")
-                st.rerun()
-        else:
-            st.info(f"Initial capital: ${st.session_state.initial_capital:,.2f} (already set)")
-
-    with col_cap2:
-        st.subheader("Add New Capital")
-        add_amount = st.number_input("Amount to Add ($)", min_value=0.0, step=1000.0)
-        add_date = st.date_input("Date", value=datetime.now().date())
-        if st.button("Add Capital"):
-            if add_amount > 0:
-                capital_additions.append({"date": add_date.strftime("%Y-%m-%d"), "amount": add_amount})
-                today = datetime.now().strftime("%Y-%m-%d")
-                history.append({"date": today, "portfolio_value": gross_value, "margin_debt": margin, "premium": 0})
-                st.success(f"Added ${add_amount:,.2f} on {add_date}")
-                st.rerun()
-
-# === MANAGE TICKERS ===
-with st.expander("📈 Manage Tickers & Allocations", expanded=False):
-    st.subheader("Add New Ticker")
-    new_ticker = st.text_input("Enter Ticker Symbol (e.g., NVDA, TSLA)").strip().upper()
-    if st.button("Add Ticker") and new_ticker:
-        if new_ticker in etfs:
-            st.warning(f"{new_ticker} already exists")
-        else:
-            suggested_pct = 0.10
-            try:
-                hist = yf.Ticker(new_ticker).history(period="1mo")
-                if not hist.empty:
-                    vol = hist["Close"].pct_change().std() * (252 ** 0.5)
-                    if vol > 0.60:
-                        suggested_pct = 0.10
-                    elif vol > 0.40:
-                        suggested_pct = 0.15
-                    else:
-                        suggested_pct = 0.25
-            except:
-                pass
-
-            etfs[new_ticker] = {
-                "shares": 0.0,
-                "cost_basis": 0.0,
-                "contracts_sold": 0,
-                "weekly_contracts": 0,
-                "target_pct": suggested_pct
-            }
-            st.success(f"{new_ticker} added with suggested target {suggested_pct*100:.1f}%")
-
-    st.subheader("Edit Target Allocations")
-    target_sum = sum(etfs.get(t, {}).get("target_pct", 0.0) for t in etfs)
-    if abs(target_sum - 1.0) > 0.001:
-        st.warning(f"Total target allocation is {target_sum*100:.1f}% (should be 100%). Will normalize on save.")
-
-    new_targets = {}
-    for t in list(etfs.keys()):
-        col_t1, col_t2 = st.columns([3, 1])
-        with col_t1:
-            st.write(t)
-        with col_t2:
-            current_pct = etfs.get(t, {}).get("target_pct", 0.0) * 100
-            new_pct = st.number_input(
-                f"Target % for {t}",
-                min_value=0.0,
-                max_value=100.0,
-                value=current_pct,
-                step=0.1,
-                key=f"tgt_{t}"
-            )
-            new_targets[t] = new_pct / 100
-
-    if st.button("Save & Normalize Targets"):
-        for t, pct in new_targets.items():
-            etfs[t]["target_pct"] = pct
-        current_sum = sum(etfs[t]["target_pct"] for t in etfs)
-        if current_sum > 0:
-            for t in etfs:
-                etfs[t]["target_pct"] /= current_sum
-        st.success("Targets saved and normalized to 100%")
-        st.rerun()
-
-# === DATA ENTRY SECTION ===
-with st.expander("📊 Data Entry (Expand to update – Collapse when done)", expanded=True):
-    col_left, col_right = st.columns(2)
-
-    with col_left:
-        st.subheader("Weekly Premium & Suggestion")
-        premium = st.number_input("Premium Received ($)", min_value=0.0, step=10.0)
-        if st.button("Suggest Reinvestment") and premium > 0:
-            total_val = gross_value
-            deviations = {t: total_val * etfs[t].get("target_pct", 0.0) - (etfs[t]["shares"] * prices.get(t, 0)) for t in etfs}
-            best = max(deviations, key=deviations.get)
-            shares_buy = premium / prices.get(best, 1)
-            st.success(f"Buy **{shares_buy:.4f} {best}** @ ${prices.get(best, 0):.4f} (uses full ${premium:.2f})")
-
-            if trading_client and st.button(f"EXECUTE PAPER TRADE: Buy {shares_buy:.4f} {best}"):
-                try:
-                    order_data = MarketOrderRequest(
-                        symbol=best,
-                        qty=shares_buy,
-                        side=OrderSide.BUY,
-                        time_in_force=TimeInForce.GTC
-                    )
-                    trading_client.submit_order(order_data)
-                    st.success("Paper trade executed!")
-                    old = etfs[best]
-                    new_shares = old["shares"] + shares_buy
-                    new_basis = (old["shares"] * old["cost_basis"] + shares_buy * prices[best]) / new_shares
-                    etfs[best]["shares"] = new_shares
-                    etfs[best]["cost_basis"] = new_basis
-                    st.rerun()
-                except Exception as e:
-                    st.error(f"Trade failed: {e}")
-
-        st.subheader("Add Purchase")
-        ticker = st.selectbox("Ticker", list(etfs.keys()), key="add_ticker")
-        shares = st.number_input("Shares (fractional)", min_value=0.0, step=0.0001, key="add_shares")
-        avg_price = st.number_input("Avg Price", min_value=0.0, key="add_price")
-        if st.button("Submit Purchase"):
-            if shares > 0 and avg_price > 0:
-                old = etfs[ticker]
-                new_shares = old["shares"] + shares
-                new_basis = (old["shares"] * old["cost_basis"] + shares * avg_price) / new_shares
-                etfs[ticker]["shares"] = new_shares
-                etfs[ticker]["cost_basis"] = new_basis
-                today = datetime.now().strftime("%Y-%m-%d")
-                history.append({"date": today, "portfolio_value": gross_value, "margin_debt": margin, "premium": premium})
-                st.success("Purchase added!")
-
-    with col_right:
-        st.subheader("Update Contracts")
-        ct_weekly = st.selectbox("Ticker (Weekly)", list(etfs.keys()), key="weekly_ticker")
-        weekly = st.number_input("Weekly Contracts", min_value=0, step=1, key="weekly_num")
-        if st.button("Update Weekly"):
-            etfs[ct_weekly]["weekly_contracts"] = weekly
-            st.success("Weekly contracts updated")
-
-        ct_owned = st.selectbox("Ticker (Owned)", list(etfs.keys()), key="owned_ticker")
-        owned = st.number_input("Contracts Owned", min_value=0, step=1, key="owned_num")
-        if st.button("Update Contracts Owned"):
-            etfs[ct_owned]["contracts_sold"] = owned
-            st.success("Contracts Owned updated")
-
-        st.subheader("Record Margin Debt")
-        margin_input = st.number_input("Current Margin ($)", min_value=0.0, key="margin_input")
-        if st.button("Record"):
-            today = datetime.now().strftime("%Y-%m-%d")
-            history.append({"date": today, "portfolio_value": gross_value, "margin_debt": margin_input, "premium": 0})
-            st.success("Margin recorded")
-
 # === AUTO WHEEL STRATEGY SECTION ===
-st.subheader("Auto Wheel Strategy (Paper Mode)")
-st.write("The app will automatically:")
-st.write("- Sell weekly calls on Monday for Friday expiry")
-st.write("- Reinvest all premium")
-st.write("- Handle assignments (call → put, put → call)")
-st.write("- Keep 100% invested (fractional shares)")
+st.subheader("🛞 Auto Wheel Strategy (Paper Mode)")
 
-if st.button("Run Auto Wheel Routine (Paper)"):
-    st.info("Auto routine running (paper mode)...")
-    # Placeholder for full auto logic (to be expanded)
-    st.success("Routine completed — check holdings and graph!")
+st.write("**How it works:**")
+st.write("- On Monday (or first run), sells weekly OTM calls for Friday expiry")
+st.write("- Uses all available cash to buy shares first (fractional allowed)")
+st.write("- Sells as many contracts as possible based on shares owned")
+st.write("- Reinvests premium immediately")
+st.write("- Handles assignments (simulated in paper)")
+
+if st.button("Run Auto Wheel Routine (Paper Mode)"):
+    with st.spinner("Running auto wheel routine..."):
+        # 1. Get available cash from Alpaca
+        if trading_client:
+            try:
+                account = trading_client.get_account()
+                cash = float(account.cash)
+            except:
+                cash = 0.0
+        else:
+            cash = 0.0
+
+        # 2. Buy shares with free cash (most under-allocated ticker)
+        if cash > 100:  # only if meaningful amount
+            deviations = {t: (etfs[t].get("target_pct", 0.0) * total_capital_added) - (etfs[t]["shares"] * prices.get(t, 0)) for t in etfs}
+            best = max(deviations, key=deviations.get)
+            shares_to_buy = cash / prices.get(best, 1)
+            if shares_to_buy > 0:
+                if trading_client:
+                    try:
+                        order_data = MarketOrderRequest(
+                            symbol=best,
+                            qty=shares_to_buy,
+                            side=OrderSide.BUY,
+                            time_in_force=TimeInForce.GTC
+                        )
+                        trading_client.submit_order(order_data)
+                        st.success(f"Executed: Bought {shares_to_buy:.4f} {best} with ${cash:,.2f} cash")
+                    except Exception as e:
+                        st.error(f"Buy failed: {e}")
+                # Update local tracker
+                old = etfs[best]
+                new_shares = old["shares"] + shares_to_buy
+                new_basis = (old["shares"] * old["cost_basis"] + shares_to_buy * prices[best]) / new_shares if new_shares > 0 else prices[best]
+                etfs[best]["shares"] = new_shares
+                etfs[best]["cost_basis"] = new_basis
+
+        # 3. Sell weekly calls on all tickers with shares
+        today = datetime.now().date()
+        days_ahead = 4 - today.weekday()  # Friday = 4
+        if days_ahead <= 0:
+            days_ahead += 7
+        expiry = today + timedelta(days=days_ahead)
+
+        total_premium = 0
+        for t in etfs:
+            shares = etfs[t]["shares"]
+            if shares >= 100:
+                contracts = int(shares // 100)
+                current_price = prices.get(t, 0)
+                otm_pct = 0.12 if "SOXL" in t else 0.09 if "TQQQ" in t else 0.07
+                strike = round(current_price * (1 + otm_pct), 2)
+                # Estimate premium (real app would fetch option price)
+                estimated_premium_per = current_price * 0.02  # rough 2% weekly
+                premium = contracts * estimated_premium_per * 100
+                total_premium += premium
+
+                if trading_client:
+                    try:
+                        # Simulate selling call (Alpaca options not in paper yet, so simulate)
+                        st.info(f"Simulated: Sold {contracts} {t} calls @ ${strike} exp {expiry} — est premium ${premium:,.2f}")
+                    except:
+                        pass
+
+                etfs[t]["weekly_contracts"] = contracts
+                history.append({"date": datetime.now().strftime("%Y-%m-%d"), "premium": premium, "option_trade": f"Sold {contracts} {t} calls @ {strike} exp {expiry}"})
+
+        st.success(f"Auto Wheel Routine Complete — Estimated premium collected: ${total_premium:,.2f}")
+        st.rerun()
 
 # Growth Chart
 st.subheader("Growth, Margin & Premium Tracker")

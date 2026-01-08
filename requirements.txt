@@ -3,3 +3,4 @@ yfinance
 pandas
 plotly
 alpaca-trade-api
+urllib3<2

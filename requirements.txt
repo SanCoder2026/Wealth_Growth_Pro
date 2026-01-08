@@ -2,5 +2,4 @@ streamlit
 yfinance
 pandas
 plotly
-st-paywall   # Remove this line if you disable paywall for now
 alpaca-trade-api

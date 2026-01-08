@@ -1,0 +1,267 @@
+import streamlit as st
+import yfinance as yf
+import pandas as pd
+import plotly.graph_objects as go
+from datetime import datetime
+import alpaca_trade_api as tradeapi  # Official Alpaca SDK
+import os
+
+# === CONFIG ===
+st.set_page_config(page_title="Wealth Growth Pro → $1M (Paper Trading)", layout="wide", initial_sidebar_state="expanded")
+INITIAL_INVESTMENT_DEFAULT = 81000.0
+PREMIUM_TARGET_MONTHLY = 100000.0
+
+# === USERNAME SECTION WITH APPLY BUTTON ===
+st.markdown("### 👤 User Name Entry")
+col_user1, col_user2 = st.columns([3, 1])
+with col_user1:
+    username_input = st.text_input("User Name :", value="", placeholder="Enter your username", key="username_input", label_visibility="collapsed")
+with col_user2:
+    apply_btn = st.button("APPLY", type="primary", use_container_width=True)
+
+if apply_btn:
+    if not username_input.strip():
+        st.error("Username cannot be empty!")
+    else:
+        st.session_state.username = username_input.strip()
+        st.success(f"Username set: **{st.session_state.username}**")
+        st.rerun()
+
+if "username" not in st.session_state or not st.session_state.username:
+    st.info("👆 Please enter a username and click **APPLY** to begin. Your data will be saved under this name.")
+    st.stop()
+
+username = st.session_state.username
+DATA_FILE = f"{username}_data.json"
+
+# === LOAD/SAVE PER USER ===
+def load_data():
+    if os.path.exists(DATA_FILE):
+        try:
+            with open(DATA_FILE, "r") as f:
+                data = json.load(f)
+                etfs = data.get("etfs", {})
+                history = data.get("history", [])
+                initial_capital = data.get("initial_capital", INITIAL_INVESTMENT_DEFAULT)
+                capital_additions = data.get("capital_additions", [])
+                return etfs, history, initial_capital, capital_additions
+        except:
+            pass
+    return (
+        {"TQQQ": {"shares": 0.0, "cost_basis": 0.0, "contracts_sold": 0, "weekly_contracts": 0, "target_pct": 0.40},
+         "SOXL": {"shares": 0.0, "cost_basis": 0.0, "contracts_sold": 0, "weekly_contracts": 0, "target_pct": 0.35},
+         "UPRO": {"shares": 0.0, "cost_basis": 0.0, "contracts_sold": 0, "weekly_contracts": 0, "target_pct": 0.25}},
+        [],
+        INITIAL_INVESTMENT_DEFAULT,
+        []
+    )
+
+def save_data(etfs, history, initial_capital, capital_additions):
+    data = {
+        "etfs": etfs,
+        "history": history,
+        "initial_capital": initial_capital,
+        "capital_additions": capital_additions
+    }
+    with open(DATA_FILE, "w") as f:
+        json.dump(data, f)
+
+etfs, history, initial_capital, capital_additions = load_data()
+
+# === ALPACA PAPER TRADING CONNECTION ===
+ALPACA_API_KEY = st.secrets.get("ALPACA_API_KEY", "")
+ALPACA_SECRET_KEY = st.secrets.get("ALPACA_SECRET_KEY", "")
+ALPACA_BASE_URL = "https://paper-api.alpaca.markets"
+
+if ALPACA_API_KEY and ALPACA_SECRET_KEY:
+    api = tradeapi.REST(ALPACA_API_KEY, ALPACA_SECRET_KEY, ALPACA_BASE_URL, api_version='v2')
+    account = api.get_account()
+    st.sidebar.success(f"Connected to Alpaca Paper Trading: ${float(account.cash):,.2f} cash")
+else:
+    st.sidebar.warning("Add ALPACA_API_KEY and ALPACA_SECRET_KEY in Streamlit Secrets for paper trading")
+    api = None
+
+# === PRICE FETCH (fallback to yfinance if Alpaca not connected) ===
+@st.cache_data(ttl=300)
+def fetch_prices(tickers_list):
+    if api:
+        try:
+            quotes = api.get_quotes(tickers_list)
+            prices = {q.symbol: round(q.ap, 4) for q in quotes}
+            return prices
+        except:
+            pass
+    # Fallback to yfinance
+    try:
+        data = yf.Tickers(" ".join(tickers_list))
+        prices = {}
+        for t in tickers_list:
+            price = data.tickers[t].info.get('currentPrice') or data.tickers[t].info.get('regularMarketPrice')
+            prices[t] = round(price, 4) if price else 0
+        return prices
+    except:
+        return {t: 0 for t in tickers_list}
+
+current_tickers = list(etfs.keys())
+prices = fetch_prices(current_tickers)
+
+# === CALCULATIONS ===
+gross_value = sum(etfs[t]["shares"] * prices.get(t, 0) for t in current_tickers)
+margin = history[-1]["margin_debt"] if history else 0
+total_capital_added = initial_capital + sum(add["amount"] for add in capital_additions)
+net_equity = gross_value - margin
+profit = net_equity - total_capital_added
+pct_to_m = max(0, (net_equity / 1000000) * 100)
+
+total_premium_last4 = sum(h.get("premium", 0) for h in history[-4:])
+monthly_premium_est = total_premium_last4
+
+# === DASHBOARD ===
+st.title("🚀 Wealth Growth Pro → $1M (Alpaca Paper Trading)")
+
+col1, col2, col3, col4, col5 = st.columns(5)
+col1.metric("Gross Portfolio", f"${gross_value:,.2f}")
+col2.metric("Current Margin", f"${margin:,.2f}")
+col3.metric("Net Equity", f"${net_equity:,.2f}", delta=f"${profit:,.2f}")
+col4.metric("Total Capital Added", f"${total_capital_added:,.2f}")
+col5.metric("Progress to $1M", f"{pct_to_m:.2f}%")
+
+st.caption(f"Monthly Premium Estimate: ${monthly_premium_est:,.2f} (Target: ${PREMIUM_TARGET_MONTHLY:,.0f})")
+
+# === HOLDINGS TABLE ===
+rows = []
+total_val = gross_value or 1
+for t in etfs:
+    d = etfs[t]
+    shares = d["shares"]
+    purchase_value = shares * d["cost_basis"]
+    current_value = shares * prices.get(t, 0)
+    current_pct = current_value / total_val * 100
+    target_pct = d.get("target_pct", 0.0) * 100
+    contracts_owned = d["contracts_sold"]
+    weekly_contracts = d["weekly_contracts"]
+    otm = 0.12 if "SOXL" in t else 0.09 if "TQQQ" in t else 0.07
+    strike = round(prices.get(t, 0) * (1 + otm), 2)
+    rows.append({
+        "Ticker": t,
+        "Shares": f"{shares:.4f}",
+        "Contracts Owned": contracts_owned,
+        "Weekly Contracts": weekly_contracts,
+        "Purchase Value": f"${purchase_value:,.2f}",
+        "Current Value": f"${current_value:,.2f}",
+        "Target %": f"{target_pct:.1f}",
+        "Current %": f"{current_pct:.2f}",
+        "Suggested Strike (~20δ)": f"${strike}"
+    })
+
+st.subheader("Current Holdings")
+st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+
+# === DATA ENTRY SECTION ===
+with st.expander("📊 Data Entry (Expand to update – Collapse when done)", expanded=True):
+    col_left, col_right = st.columns(2)
+
+    with col_left:
+        st.subheader("Weekly Premium & Suggestion")
+        premium = st.number_input("Premium Received ($)", min_value=0.0, step=10.0)
+        if st.button("Suggest Reinvestment") and premium > 0:
+            total_val = gross_value
+            deviations = {t: total_val * etfs[t].get("target_pct", 0.0) - (etfs[t]["shares"] * prices.get(t, 0)) for t in etfs}
+            best = max(deviations, key=deviations.get)
+            shares_buy = premium / prices.get(best, 1)
+            st.success(f"Buy **{shares_buy:.4f} {best}** @ ${prices.get(best, 0):.4f} (uses full ${premium:.2f})")
+
+            if api and st.button(f"EXECUTE PAPER TRADE: Buy {shares_buy:.4f} {best}"):
+                try:
+                    api.submit_order(
+                        symbol=best,
+                        qty=shares_buy,
+                        side='buy',
+                        type='market',
+                        time_in_force='gtc'
+                    )
+                    st.success(f"Paper trade executed: Bought {shares_buy:.4f} {best}")
+                    # Update holdings
+                    old = etfs[best]
+                    new_shares = old["shares"] + shares_buy
+                    new_basis = (old["shares"] * old["cost_basis"] + shares_buy * prices[best]) / new_shares
+                    etfs[best]["shares"] = new_shares
+                    etfs[best]["cost_basis"] = new_basis
+                    save_data(etfs, history, initial_capital, capital_additions)
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Trade failed: {e}")
+
+        st.subheader("Add Purchase")
+        ticker = st.selectbox("Ticker", list(etfs.keys()), key="add_ticker")
+        shares = st.number_input("Shares (fractional)", min_value=0.0, step=0.0001, key="add_shares")
+        avg_price = st.number_input("Avg Price", min_value=0.0, key="add_price")
+        if st.button("Submit Purchase"):
+            if shares > 0 and avg_price > 0:
+                old = etfs[ticker]
+                new_shares = old["shares"] + shares
+                new_basis = (old["shares"] * old["cost_basis"] + shares * avg_price) / new_shares
+                etfs[ticker]["shares"] = new_shares
+                etfs[ticker]["cost_basis"] = new_basis
+                today = datetime.now().strftime("%Y-%m-%d")
+                history.append({"date": today, "portfolio_value": gross_value, "margin_debt": margin, "premium": premium})
+                save_data(etfs, history, initial_capital, capital_additions)
+                st.success("Purchase added!")
+
+    with col_right:
+        st.subheader("Update Contracts")
+        ct_weekly = st.selectbox("Ticker (Weekly)", list(etfs.keys()), key="weekly_ticker")
+        weekly = st.number_input("Weekly Contracts", min_value=0, step=1, key="weekly_num")
+        if st.button("Update Weekly"):
+            etfs[ct_weekly]["weekly_contracts"] = weekly
+            save_data(etfs, history, initial_capital, capital_additions)
+            st.success("Weekly contracts updated")
+
+        ct_owned = st.selectbox("Ticker (Owned)", list(etfs.keys()), key="owned_ticker")
+        owned = st.number_input("Contracts Owned", min_value=0, step=1, key="owned_num")
+        if st.button("Update Contracts Owned"):
+            etfs[ct_owned]["contracts_sold"] = owned
+            save_data(etfs, history, initial_capital, capital_additions)
+            st.success("Contracts Owned updated")
+
+        st.subheader("Record Margin Debt")
+        margin_input = st.number_input("Current Margin ($)", min_value=0.0, key="margin_input")
+        if st.button("Record"):
+            today = datetime.now().strftime("%Y-%m-%d")
+            history.append({"date": today, "portfolio_value": gross_value, "margin_debt": margin_input, "premium": 0})
+            save_data(etfs, history, initial_capital, capital_additions)
+            st.success("Margin recorded")
+
+# Growth Chart with Toggles
+st.subheader("Growth, Margin & Premium Tracker")
+
+show_margin = st.checkbox("Show Margin Debt", value=False)
+show_premium = st.checkbox("Show Monthly Premium Estimate", value=False)
+show_goal = st.checkbox("Show $100k/month Premium Goal", value=True)
+
+if history:
+    df = pd.DataFrame(history)
+    df["date"] = pd.to_datetime(df["date"])
+    df["net_profit"] = df["portfolio_value"] - df["margin_debt"] - initial_capital
+    df["monthly_premium"] = df["premium"].rolling(window=4, min_periods=1).sum()
+
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(x=df["date"], y=df["portfolio_value"], name="Gross Value", line=dict(color="royalblue")))
+    fig.add_trace(go.Scatter(x=df["date"], y=df["net_profit"], name="Net Profit", line=dict(color="green", width=3)))
+    fig.add_hline(y=initial_capital, line_dash="dash", line_color="red", annotation_text="Initial Capital")
+
+    if show_margin:
+        fig.add_trace(go.Scatter(x=df["date"], y=-df["margin_debt"], name="Margin Debt (negative)", line=dict(color="orange", dash="dot")))
+    if show_premium:
+        fig.add_trace(go.Scatter(x=df["date"], y=df["monthly_premium"], name="Monthly Premium Est.", line=dict(color="purple")))
+    if show_goal:
+        fig.add_hline(y=PREMIUM_TARGET_MONTHLY, line_dash="dash", line_color="purple", annotation_text="$100k/month Goal")
+
+    for add in capital_additions:
+        add_date = pd.to_datetime(add["date"])
+        fig.add_vline(x=add_date, line_dash="dot", line_color="green", annotation_text=f"+${add['amount']:,.0f}")
+
+    fig.update_layout(height=600, title="Path to $1M + $100k/month Premium")
+    st.plotly_chart(fig, use_container_width=True)
+else:
+    st.info("Record margin, premium or capital to start tracking")

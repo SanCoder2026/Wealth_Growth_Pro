@@ -88,6 +88,16 @@ initial_capital = data.get("initial_capital", INITIAL_INVESTMENT_DEFAULT)
 capital_additions = data.get("capital_additions", [])
 option_trades = data.get("option_trades", [])
 
+# Force margin to be float
+margin = 0.0
+if history:
+    last_margin = history[-1].get("margin_debt")
+    if last_margin is not None:
+        try:
+            margin = float(last_margin)
+        except (TypeError, ValueError):
+            margin = 0.0
+
 # Auto-save session start snapshot if new session
 if "session_snapshotted" not in st.session_state:
     save_version(data, is_session_start=True)
@@ -135,7 +145,6 @@ prices = fetch_prices(list(etfs.keys()))
 
 # === CALCULATIONS ===
 gross_value = sum(etfs[t]["shares"] * prices.get(t, 0) for t in etfs)
-margin = history[-1].get("margin_debt", 0) if history else 0
 total_capital_added = initial_capital + sum(a["amount"] for a in capital_additions)
 net_equity = gross_value - margin
 profit = net_equity - total_capital_added
@@ -163,7 +172,7 @@ with st.expander("💰 Capital & Margin", expanded=False):
         if st.button("Add Capital") and add_amount > 0:
             capital_additions.append({"date": add_date.strftime("%Y-%m-%d"), "amount": add_amount})
             today = datetime.now().strftime("%Y-%m-%d")
-            history.append({"date": today, "portfolio_value": gross_value, "margin_debt": margin, "premium": 0})
+            history.append({"date": today, "portfolio_value": gross_value, "margin_debt": float(margin), "premium": 0})
             save_version({"etfs": etfs, "history": history, "initial_capital": initial_capital,
                           "capital_additions": capital_additions, "option_trades": option_trades})
             st.success(f"Added ${add_amount:,.2f}")
@@ -171,29 +180,42 @@ with st.expander("💰 Capital & Margin", expanded=False):
 
     with col_cap2:
         st.subheader("Update Margin Debt")
-        margin_input = st.number_input("Current Margin ($)", min_value=0.0, value=margin, key="margin_upd")
+        # Debug line (uncomment if still having issues)
+        # st.write(f"Debug: margin type = {type(margin)}, value = {margin}")
+
+        margin_input = st.number_input(
+            "Current Margin ($)",
+            min_value=0.0,
+            value=float(margin),           # <-- explicit float
+            step=100.0,
+            format="%.2f",
+            key="margin_upd"
+        )
         if st.button("Record Margin") and margin_input != margin:
             today = datetime.now().strftime("%Y-%m-%d")
-            history.append({"date": today, "portfolio_value": gross_value, "margin_debt": margin_input, "premium": 0})
+            history.append({
+                "date": today,
+                "portfolio_value": gross_value,
+                "margin_debt": float(margin_input),   # save as float
+                "premium": 0
+            })
             save_version({"etfs": etfs, "history": history, "initial_capital": initial_capital,
                           "capital_additions": capital_additions, "option_trades": option_trades})
             st.success("Margin updated")
             st.rerun()
 
-# === TICKERS & ALLOCATIONS (from app2) ===
+# === TICKERS & ALLOCATIONS ===
 with st.expander("📈 Manage Tickers & Targets", expanded=False):
-    # Add new ticker ...
     st.subheader("Add Ticker")
     new_ticker = st.text_input("Ticker (e.g. NVDA)", "").strip().upper()
     if st.button("Add") and new_ticker and new_ticker not in etfs:
-        suggested_pct = 0.10  # simplified — can expand volatility logic
+        suggested_pct = 0.10
         etfs[new_ticker] = {"shares":0.0, "cost_basis":0.0, "contracts_sold":0, "weekly_contracts":0, "target_pct":suggested_pct}
         save_version({"etfs": etfs, "history": history, "initial_capital": initial_capital,
                       "capital_additions": capital_additions, "option_trades": option_trades})
         st.success(f"{new_ticker} added")
         st.rerun()
 
-    # Edit targets ...
     st.subheader("Target Allocations")
     new_targets = {}
     for t in list(etfs):
@@ -230,7 +252,7 @@ for t in etfs:
 st.subheader("Holdings")
 st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
 
-# === OPTIONS / WHEEL SECTION (from app3) ===
+# === OPTIONS / WHEEL SECTION ===
 with st.expander("🛞 Options Trading & Weekly Wheel (Paper)", expanded=True):
     st.subheader("Sell Weekly Call")
     ticker = st.selectbox("Ticker", list(etfs.keys()), key="opt_tkr")
@@ -255,7 +277,6 @@ with st.expander("🛞 Options Trading & Weekly Wheel (Paper)", expanded=True):
             today_str = datetime.now().strftime("%Y-%m-%d")
             history.append({"date": today_str, "premium": total_prem, "note": f"Sold {contracts} {ticker} calls"})
             
-            # Optional: record open trade
             option_trades.append({
                 "ticker": ticker, "type": "call", "strike": strike, "expiry": expiry_str,
                 "contracts": contracts, "premium": premium_per, "status": "open"
@@ -283,7 +304,7 @@ with st.expander("🛞 Options Trading & Weekly Wheel (Paper)", expanded=True):
             st.success("Assignments updated")
             st.rerun()
 
-# === DATA ENTRY (Purchases, Premiums, etc.) ===
+# === DATA ENTRY ===
 with st.expander("📊 Manual Updates", expanded=False):
     col_l, col_r = st.columns(2)
     with col_l:
@@ -291,12 +312,11 @@ with st.expander("📊 Manual Updates", expanded=False):
         premium = st.number_input("Premium Received ($)", 0.0, step=10.0)
         if st.button("Record Premium") and premium > 0:
             today = datetime.now().strftime("%Y-%m-%d")
-            history.append({"date": today, "premium": premium, "portfolio_value": gross_value, "margin_debt": margin})
+            history.append({"date": today, "premium": premium, "portfolio_value": gross_value, "margin_debt": float(margin)})
             save_version({"etfs": etfs, "history": history, "initial_capital": initial_capital,
                           "capital_additions": capital_additions, "option_trades": option_trades})
             st.success("Premium recorded")
 
-        # Add purchase ...
         st.subheader("Add Purchase")
         tk = st.selectbox("Ticker", list(etfs), key="buy_tk")
         sh = st.number_input("Shares", 0.0001, step=0.0001)
@@ -309,7 +329,7 @@ with st.expander("📊 Manual Updates", expanded=False):
                 etfs[tk]["shares"] = new_s
                 etfs[tk]["cost_basis"] = new_b
                 history.append({"date": datetime.now().strftime("%Y-%m-%d"), "portfolio_value": gross_value,
-                                "margin_debt": margin, "premium": 0})
+                                "margin_debt": float(margin), "premium": 0})
                 save_version({"etfs": etfs, "history": history, "initial_capital": initial_capital,
                               "capital_additions": capital_additions, "option_trades": option_trades})
                 st.success("Purchase added")
@@ -334,7 +354,7 @@ show_prem = st.checkbox("Show Monthly Premium", False)
 if history:
     df = pd.DataFrame(history)
     df["date"] = pd.to_datetime(df["date"])
-    df["net"] = df["portfolio_value"] - df.get("margin_debt", 0) - initial_capital
+    df["net"] = df["portfolio_value"] - df.get("margin_debt", 0.0) - initial_capital
     df["monthly_prem"] = df["premium"].rolling(4, min_periods=1).sum()
 
     fig = go.Figure()
@@ -349,4 +369,4 @@ if history:
     fig.update_layout(height=550)
     st.plotly_chart(fig, use_container_width=True)
 
-st.caption("Made with ❤️ — v5 with versioning & wheel section")
+st.caption("Made with ❤️ — v5 with versioning & wheel section — margin type fixed")

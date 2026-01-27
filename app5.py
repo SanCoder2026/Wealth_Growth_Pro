@@ -70,7 +70,7 @@ def load_latest():
         "history": [],
         "initial_capital": INITIAL_INVESTMENT_DEFAULT,
         "capital_additions": [],
-        "option_trades": []   # added from app3
+        "option_trades": []
     }
 
 def load_version(filename):
@@ -84,7 +84,7 @@ def load_version(filename):
 data = load_latest()
 etfs = data.get("etfs", {})
 history = data.get("history", [])
-initial_capital = data.get("initial_capital", INITIAL_INVESTMENT_DEFAULT)
+initial_capital = float(data.get("initial_capital", INITIAL_INVESTMENT_DEFAULT))
 capital_additions = data.get("capital_additions", [])
 option_trades = data.get("option_trades", [])
 
@@ -98,7 +98,7 @@ if history:
         except (TypeError, ValueError):
             margin = 0.0
 
-# Auto-save session start snapshot if new session
+# Auto-save session start snapshot
 if "session_snapshotted" not in st.session_state:
     save_version(data, is_session_start=True)
     st.session_state.session_snapshotted = True
@@ -170,7 +170,7 @@ with st.expander("💰 Capital & Margin", expanded=False):
         add_amount = st.number_input("Amount ($)", min_value=0.0, step=1000.0, key="add_amt")
         add_date = st.date_input("Date", value=datetime.now().date(), key="add_date")
         if st.button("Add Capital") and add_amount > 0:
-            capital_additions.append({"date": add_date.strftime("%Y-%m-%d"), "amount": add_amount})
+            capital_additions.append({"date": add_date.strftime("%Y-%m-%d"), "amount": float(add_amount)})
             today = datetime.now().strftime("%Y-%m-%d")
             history.append({"date": today, "portfolio_value": gross_value, "margin_debt": float(margin), "premium": 0})
             save_version({"etfs": etfs, "history": history, "initial_capital": initial_capital,
@@ -180,13 +180,10 @@ with st.expander("💰 Capital & Margin", expanded=False):
 
     with col_cap2:
         st.subheader("Update Margin Debt")
-        # Debug line (uncomment if still having issues)
-        # st.write(f"Debug: margin type = {type(margin)}, value = {margin}")
-
         margin_input = st.number_input(
             "Current Margin ($)",
             min_value=0.0,
-            value=float(margin),           # <-- explicit float
+            value=float(margin),
             step=100.0,
             format="%.2f",
             key="margin_upd"
@@ -196,7 +193,7 @@ with st.expander("💰 Capital & Margin", expanded=False):
             history.append({
                 "date": today,
                 "portfolio_value": gross_value,
-                "margin_debt": float(margin_input),   # save as float
+                "margin_debt": float(margin_input),
                 "premium": 0
             })
             save_version({"etfs": etfs, "history": history, "initial_capital": initial_capital,
@@ -221,7 +218,7 @@ with st.expander("📈 Manage Tickers & Targets", expanded=False):
     for t in list(etfs):
         col_t1, col_t2 = st.columns([3,1])
         col_t1.write(t)
-        pct = st.number_input(f"% {t}", 0.0, 100.0, etfs[t]["target_pct"]*100, 0.1, key=f"tgt_{t}") / 100
+        pct = st.number_input(f"% {t}", 0.0, 100.0, float(etfs[t]["target_pct"])*100, 0.1, key=f"tgt_{t}") / 100
         new_targets[t] = pct
 
     if st.button("Save & Normalize"):
@@ -242,7 +239,7 @@ for t in etfs:
     val = d["shares"] * prices.get(t, 0)
     rows.append({
         "Ticker": t,
-        "Shares": f"{d['shares']:.4f}",
+        "Shares": f"{float(d['shares']):.4f}",
         "Contracts Owned": d["contracts_sold"],
         "Weekly Contracts": d["weekly_contracts"],
         "Current Value": f"${val:,.2f}",
@@ -269,27 +266,49 @@ with st.expander("🛞 Options Trading & Weekly Wheel (Paper)", expanded=True):
         st.write(f"Price: **${current_price:.2f}**   |   Next Friday: **{expiry_str}**")
         st.write(f"Suggested OTM Call Strike: **${strike}**")
 
-        contracts = st.number_input("Contracts to Sell", min_value=1, step=1, value=etfs[ticker]["weekly_contracts"])
+        contracts = st.number_input(
+            "Contracts to Sell",
+            min_value=0,
+            step=1,
+            value=int(etfs[ticker]["weekly_contracts"]),
+            help="0 = no contracts this week"
+        )
         premium_per = st.number_input("Premium per contract ($)", min_value=0.0, step=0.05)
+
         if st.button("Sell Calls"):
-            total_prem = contracts * premium_per * 100
-            etfs[ticker]["weekly_contracts"] = contracts
-            today_str = datetime.now().strftime("%Y-%m-%d")
-            history.append({"date": today_str, "premium": total_prem, "note": f"Sold {contracts} {ticker} calls"})
-            
-            option_trades.append({
-                "ticker": ticker, "type": "call", "strike": strike, "expiry": expiry_str,
-                "contracts": contracts, "premium": premium_per, "status": "open"
-            })
-            
-            save_version({"etfs": etfs, "history": history, "initial_capital": initial_capital,
-                          "capital_additions": capital_additions, "option_trades": option_trades})
-            st.success(f"Recorded ${total_prem:,.2f} premium")
-            st.rerun()
+            if contracts <= 0:
+                st.warning("Select at least 1 contract to sell (or skip this week).")
+            elif premium_per <= 0:
+                st.warning("Enter a positive premium amount.")
+            else:
+                total_prem = contracts * premium_per * 100
+                etfs[ticker]["weekly_contracts"] = int(contracts)
+                today_str = datetime.now().strftime("%Y-%m-%d")
+                history.append({"date": today_str, "premium": float(total_prem), "note": f"Sold {contracts} {ticker} calls"})
+                
+                option_trades.append({
+                    "ticker": ticker,
+                    "type": "call",
+                    "strike": strike,
+                    "expiry": expiry_str,
+                    "contracts": int(contracts),
+                    "premium": float(premium_per),
+                    "status": "open"
+                })
+                
+                save_version({
+                    "etfs": etfs,
+                    "history": history,
+                    "initial_capital": initial_capital,
+                    "capital_additions": capital_additions,
+                    "option_trades": option_trades
+                })
+                st.success(f"Recorded ${total_prem:,.2f} premium")
+                st.rerun()
 
     st.subheader("Monday Wheel Check")
     if st.button("Run Assignment Check"):
-        open_trades = [t for t in option_trades if t["status"] == "open"]
+        open_trades = [t for t in option_trades if t.get("status") == "open"]
         if not open_trades:
             st.info("No open trades")
         for trade in open_trades:
@@ -312,7 +331,12 @@ with st.expander("📊 Manual Updates", expanded=False):
         premium = st.number_input("Premium Received ($)", 0.0, step=10.0)
         if st.button("Record Premium") and premium > 0:
             today = datetime.now().strftime("%Y-%m-%d")
-            history.append({"date": today, "premium": premium, "portfolio_value": gross_value, "margin_debt": float(margin)})
+            history.append({
+                "date": today,
+                "premium": float(premium),
+                "portfolio_value": gross_value,
+                "margin_debt": float(margin)
+            })
             save_version({"etfs": etfs, "history": history, "initial_capital": initial_capital,
                           "capital_additions": capital_additions, "option_trades": option_trades})
             st.success("Premium recorded")
@@ -324,12 +348,16 @@ with st.expander("📊 Manual Updates", expanded=False):
         if st.button("Submit Buy"):
             if sh > 0 and pr > 0:
                 old = etfs[tk]
-                new_s = old["shares"] + sh
-                new_b = (old["shares"] * old["cost_basis"] + sh * pr) / new_s if new_s > 0 else pr
+                new_s = float(old["shares"]) + float(sh)
+                new_b = (float(old["shares"]) * float(old["cost_basis"]) + float(sh) * float(pr)) / new_s if new_s > 0 else float(pr)
                 etfs[tk]["shares"] = new_s
                 etfs[tk]["cost_basis"] = new_b
-                history.append({"date": datetime.now().strftime("%Y-%m-%d"), "portfolio_value": gross_value,
-                                "margin_debt": float(margin), "premium": 0})
+                history.append({
+                    "date": datetime.now().strftime("%Y-%m-%d"),
+                    "portfolio_value": gross_value,
+                    "margin_debt": float(margin),
+                    "premium": 0
+                })
                 save_version({"etfs": etfs, "history": history, "initial_capital": initial_capital,
                               "capital_additions": capital_additions, "option_trades": option_trades})
                 st.success("Purchase added")
@@ -340,8 +368,8 @@ with st.expander("📊 Manual Updates", expanded=False):
         weekly = st.number_input("Weekly Sold", 0, step=1)
         owned = st.number_input("Total Owned", 0, step=1)
         if st.button("Update Contracts"):
-            etfs[ct_tk]["weekly_contracts"] = weekly
-            etfs[ct_tk]["contracts_sold"] = owned
+            etfs[ct_tk]["weekly_contracts"] = int(weekly)
+            etfs[ct_tk]["contracts_sold"] = int(owned)
             save_version({"etfs": etfs, "history": history, "initial_capital": initial_capital,
                           "capital_additions": capital_additions, "option_trades": option_trades})
             st.success("Contracts updated")
@@ -369,4 +397,4 @@ if history:
     fig.update_layout(height=550)
     st.plotly_chart(fig, use_container_width=True)
 
-st.caption("Made with ❤️ — v5 with versioning & wheel section — margin type fixed")
+st.caption("Made with ❤️ — v5 — fixed margin & contracts errors — Jan 2026")

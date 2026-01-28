@@ -1,7 +1,65 @@
 import streamlit as st
 import yfinance as yf
 import pandas as pd
-import plotly.graph_objects as go
+import plotly.graph_objects as go# === HOLDINGS TABLE ===
+rows = []
+total_val = gross_value or 1
+
+for t in sorted(etfs.keys()):
+    d = etfs[t]
+    current_price = prices.get(t, 0)
+    shares = float(d.get("shares", 0))
+    cost_basis = float(d.get("cost_basis", 0))
+    
+    purchase_value = shares * cost_basis
+    current_value  = shares * current_price
+    
+    profit_dollar = current_value - purchase_value
+    profit_pct    = (profit_dollar / purchase_value * 100) if purchase_value > 0 else 0
+    
+    # Rough suggested OTM strike for ~30 delta covered call (weekly)
+    # These are empirical approximations — adjust as you observe real chains
+    if "SOXL" in t or "TQQQ" in t:
+        otm_pct = 0.14      # ~28–32 delta range for high-IV leveraged names
+        delta_est = "~30Δ"
+    elif "URA" in t:
+        otm_pct = 0.12
+        delta_est = "~28–32Δ"
+    elif "SLV" in t or "COPX" in t:
+        otm_pct = 0.085     # silver/copper usually moderate IV
+        delta_est = "~30Δ"
+    elif "IAU" in t or "UPRO" in t:
+        otm_pct = 0.065     # gold & broad market lower IV
+        delta_est = "~30–35Δ"
+    else:
+        otm_pct = 0.10      # fallback
+        delta_est = "~30Δ"
+    
+    suggested_strike = round(current_price * (1 + otm_pct), 2) if current_price > 0 else "-"
+    
+    rows.append({
+        "Ticker": t,
+        "Shares": f"{shares:.4f}",
+        "Purchase price": f"${cost_basis:.2f}" if cost_basis > 0 else "-",
+        "Current Value": f"${current_value:,.2f}",
+        "Current %": f"{(current_value / total_val * 100):.2f}%",
+        "Target %": f"{d.get('target_pct', 0)*100:.1f}%",
+        "Profit $": f"${profit_dollar:,.2f}" if purchase_value > 0 else "-",
+        "Profit %": f"{profit_pct:+.2f}%" if purchase_value > 0 else "-",
+        "Suggested Strike (~30Δ)": f"${suggested_strike}" if current_price > 0 else "-",
+        "Delta Est.": delta_est
+    })
+
+st.subheader("Current Holdings")
+st.dataframe(
+    pd.DataFrame(rows),
+    use_container_width=True,
+    hide_index=True,
+    column_config={
+        "Profit $": st.column_config.NumberColumn(format="$%.2f"),
+        "Profit %": st.column_config.NumberColumn(format="%.2f%%"),
+    }
+)
 import json
 import os
 from datetime import datetime, timedelta
@@ -403,3 +461,4 @@ if history:
     st.plotly_chart(fig, use_container_width=True)
 
 st.caption("Wealth Growth Pro — with options wheel paper trading — updated Jan 2026")
+

@@ -227,8 +227,37 @@ with st.expander("💰 Capital & Margin"):
             st.success("Margin updated")
             st.rerun()
 
+# === MANAGE TICKERS & ADD NEW ===
+with st.expander("📈 Manage Tickers & Rebalance", expanded=True):
+    st.subheader("Add New Ticker")
+    col_add1, col_add2 = st.columns([3, 1])
+    with col_add1:
+        new_ticker = st.text_input("Ticker Symbol", "", key="new_ticker_input", placeholder="e.g. NVDA, TSLA").strip().upper()
+    with col_add2:
+        if st.button("Add & Rebalance", type="primary", use_container_width=True):
+            if new_ticker and new_ticker not in etfs:
+                default_pct = 0.005
+                etfs[new_ticker] = {
+                    "shares": 0.0,
+                    "cost_basis": 0.0,
+                    "target_pct": TARGET_ALLOCATIONS.get(new_ticker, default_pct),
+                    "contracts_sold": 0,
+                    "weekly_contracts": 0
+                }
+                save_version({
+                    "etfs": etfs,
+                    "history": history,
+                    "initial_capital": initial_capital,
+                    "capital_additions": capital_additions,
+                    "option_trades": option_trades
+                })
+                st.success(f"Added **{new_ticker}**")
+                st.rerun()
+            else:
+                st.warning("Ticker already exists or input invalid")
+
 # === OPTIONS / WHEEL SECTION ===
-with st.expander("🛞 Options Trading & Weekly Wheel (Paper)", expanded=False):
+with st.expander("🛞 Options Trading & Weekly Wheel (Paper)"):
     st.subheader("Sell Weekly Call")
     ticker = st.selectbox("Ticker", list(etfs.keys()), key="opt_tkr")
     if ticker and prices.get(ticker, 0) > 0:
@@ -301,7 +330,7 @@ with st.expander("🛞 Options Trading & Weekly Wheel (Paper)", expanded=False):
             st.success("Assignments updated")
             st.rerun()
 
-# === HOLDINGS TABLE (updated with new columns) ===
+# === CURRENT HOLDINGS TABLE ===
 st.subheader("Current Holdings")
 
 rows = []
@@ -319,7 +348,7 @@ for t in sorted(etfs.keys()):
     profit_dollar = current_value - purchase_value
     profit_pct    = (profit_dollar / purchase_value * 100) if purchase_value > 0 else 0
     
-    # Rough ~30 delta approximation for weekly covered call strike
+    # Rough ~30 delta approximation
     if "SOXL" in t or "TQQQ" in t:
         otm_pct = 0.14
         delta_est = "~30Δ"
@@ -347,7 +376,7 @@ for t in sorted(etfs.keys()):
         "Target %": f"{d.get('target_pct', 0)*100:.1f}%",
         "Profit $": f"${profit_dollar:,.2f}" if purchase_value > 0 else "-",
         "Profit %": f"{profit_pct:+.2f}%" if purchase_value > 0 else "-",
-        "Suggested Strike (~30Δ)": f"${suggested_strike}" if current_price > 0 else "-",
+        "Suggested Strike (~30Δ)": f"${suggested_strike}",
         "Delta Est.": delta_est
     })
 
@@ -403,4 +432,4 @@ if history:
     fig.update_layout(height=550)
     st.plotly_chart(fig, use_container_width=True)
 
-st.caption("Wealth Growth Pro — updated with enhanced holdings table")
+st.caption("Wealth Growth Pro — full version with add ticker before table")

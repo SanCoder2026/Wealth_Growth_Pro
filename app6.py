@@ -28,7 +28,7 @@ st.markdown(
     unsafe_allow_html=True
 )
 
-# Target allocations
+# Target allocations (can be overridden by user later)
 TARGET_ALLOCATIONS = {
     "SOXL": 0.30,
     "SLV": 0.25,
@@ -40,7 +40,7 @@ TARGET_ALLOCATIONS = {
     "UAMY": 0.01,
 }
 
-# === USERNAME SECTION ===
+# === USERNAME + HISTORY/RESTORE ===
 st.markdown("### 👤 User Name Entry")
 col_user1, col_user2 = st.columns([3, 1])
 with col_user1:
@@ -74,6 +74,7 @@ def save_version(data, is_session_start=False):
     with open(version_file, "w") as f:
         json.dump(data, f, indent=2)
     
+    # Overwrite latest
     with open(LATEST_FILE, "w") as f:
         json.dump(data, f, indent=2)
     
@@ -132,6 +133,34 @@ if history:
 if "session_snapshotted" not in st.session_state:
     save_version(data, is_session_start=True)
     st.session_state.session_snapshotted = True
+
+# === HISTORY & RESTORE SECTION (right below username) ===
+with st.expander(f"🕒 Session History & Restore ({username})", expanded=False):
+    versions = sorted(glob.glob(f"{HISTORY_DIR}*.json"), reverse=True)
+    if versions:
+        st.write(f"Found {len(versions)} saved versions")
+        selected_file = st.selectbox(
+            "Select version to restore",
+            [os.path.basename(f) for f in versions[:15]],
+            format_func=lambda x: x.replace("_", " ").replace(".json", "")
+        )
+        if st.button("Load & Replace Current State"):
+            old_data = load_version(selected_file)
+            if old_data:
+                with open(LATEST_FILE, "w") as f:
+                    json.dump(old_data, f, indent=2)
+                st.success(f"Restored version: {selected_file}")
+                st.rerun()
+    else:
+        st.info("No saved history yet — will appear after changes")
+
+# Reset button
+if st.button(f"🔴 Reset ALL {username}'s Data", type="secondary"):
+    if st.button("Confirm — this deletes everything permanently"):
+        if os.path.exists(DATA_DIR):
+            shutil.rmtree(DATA_DIR)
+        st.success("All data deleted. Refresh page.")
+        st.rerun()
 
 # === INITIAL CAPITAL SETUP ===
 if initial_capital <= 0:
@@ -432,4 +461,4 @@ if history:
     fig.update_layout(height=550)
     st.plotly_chart(fig, use_container_width=True)
 
-st.caption("Wealth Growth Pro — full version with add ticker before table")
+st.caption("Wealth Growth Pro — data now persistent with history/restore")

@@ -8,11 +8,11 @@ from datetime import datetime, timedelta
 import glob
 import shutil
 
-# === CONFIG === (unchanged)
+# === CONFIG ===
 st.set_page_config(page_title="Wealth Growth Pro → $1M", layout="wide", initial_sidebar_state="expanded")
 PREMIUM_TARGET_MONTHLY = 100000.0
 
-# Attractive centered title (unchanged)
+# Attractive centered title
 st.markdown(
     """
     <h1 style='text-align: center; color: #1E90FF; font-family: "Arial Black", Gadget, sans-serif; 
@@ -28,7 +28,7 @@ st.markdown(
     unsafe_allow_html=True
 )
 
-# Target allocations (unchanged)
+# Target allocations
 TARGET_ALLOCATIONS = {
     "SOXL": 0.30,
     "SLV": 0.25,
@@ -40,7 +40,7 @@ TARGET_ALLOCATIONS = {
     "UAMY": 0.01,
 }
 
-# === USERNAME SECTION === (unchanged)
+# === USERNAME SECTION ===
 st.markdown("### 👤 User Name Entry")
 col_user1, col_user2 = st.columns([3, 1])
 with col_user1:
@@ -67,7 +67,7 @@ HISTORY_DIR = f"{DATA_DIR}{username}_history/"
 os.makedirs(DATA_DIR, exist_ok=True)
 os.makedirs(HISTORY_DIR, exist_ok=True)
 
-# === LOAD / SAVE / VERSIONING === (unchanged)
+# === LOAD / SAVE / VERSIONING ===
 def save_version(data, is_session_start=False):
     timestamp = datetime.now().strftime("%Y-%m-%d_%H%M%S")
     version_file = f"{HISTORY_DIR}{timestamp}.json"
@@ -133,23 +133,21 @@ if "session_snapshotted" not in st.session_state:
     save_version(data, is_session_start=True)
     st.session_state.session_snapshotted = True
 
-# === HISTORY & RESTORE SECTION – INCREASED TO 30 VERSIONS + NICER DISPLAY ===
+# === HISTORY & RESTORE SECTION ===
 with st.expander(f"🕒 Session History & Restore ({username})", expanded=False):
     versions = sorted(glob.glob(f"{HISTORY_DIR}*.json"), reverse=True)
     if versions:
         st.write(f"Found {len(versions)} saved versions (showing last 30)")
-        # Nicer display: show date + time + short note if available
         display_options = []
         for f in versions[:30]:
             basename = os.path.basename(f)
             dt_str = basename.replace(".json", "").replace("_", " ")
-            # Try to find if there's a note in history (optional)
             try:
                 data_temp = load_version(basename)
                 last_entry = data_temp["history"][-1] if data_temp["history"] else {}
                 note = last_entry.get("note", "")
                 if note:
-                    dt_str += f" – {note[:40]}"
+                    dt_str += f" – {note[:40]}..."
             except:
                 pass
             display_options.append((basename, dt_str))
@@ -173,7 +171,50 @@ with st.expander(f"🕒 Session History & Restore ({username})", expanded=False)
     else:
         st.info("No saved history yet — will appear after changes")
 
-# Reset button (unchanged)
+    # === BACKUP DOWNLOAD & UPLOAD (new – survives app recreation) ===
+    st.markdown("---")
+    st.markdown("### 💾 Manual Backup & Restore (use this when recreating app)")
+
+    col_dl, col_ul = st.columns(2)
+
+    with col_dl:
+        if st.button("⬇️ Download Full Backup Now"):
+            backup = {
+                "etfs": etfs,
+                "history": history,
+                "initial_capital": initial_capital,
+                "capital_additions": capital_additions,
+                "option_trades": option_trades,
+                "timestamp": datetime.now().isoformat(),
+                "username": username
+            }
+            json_str = json.dumps(backup, indent=2)
+            st.download_button(
+                label="Download wealthgrowth_backup.json",
+                data=json_str,
+                file_name=f"wealthgrowth_{username}_{datetime.now().strftime('%Y%m%d_%H%M')}.json",
+                mime="application/json"
+            )
+
+    with col_ul:
+        st.write("Upload backup from old version")
+        uploaded = st.file_uploader("Choose backup JSON file", type=["json"])
+        if uploaded is not None:
+            try:
+                backup_data = json.load(uploaded)
+                required = ["etfs", "history", "initial_capital", "capital_additions", "option_trades"]
+                if all(k in backup_data for k in required):
+                    if st.button("Restore from Uploaded Backup", type="primary"):
+                        with open(LATEST_FILE, "w") as f:
+                            json.dump(backup_data, f, indent=2)
+                        st.success("Backup restored! Refreshing page...")
+                        st.rerun()
+                else:
+                    st.error("Invalid backup — missing required sections")
+            except Exception as e:
+                st.error(f"Error reading file: {str(e)}")
+
+# Reset button
 if st.button(f"🔴 Reset ALL {username}'s Data", type="secondary"):
     if st.button("Confirm — this deletes everything permanently"):
         if os.path.exists(DATA_DIR):
@@ -181,7 +222,7 @@ if st.button(f"🔴 Reset ALL {username}'s Data", type="secondary"):
         st.success("All data deleted. Refresh page.")
         st.rerun()
 
-# === INITIAL CAPITAL SETUP === (unchanged)
+# === INITIAL CAPITAL SETUP ===
 if initial_capital <= 0:
     st.warning("Initial capital has not been set yet. Please define your starting point.")
     with st.form(key="set_initial_capital_form"):
@@ -217,7 +258,7 @@ if initial_capital <= 0:
 else:
     st.info(f"Initial capital: **${initial_capital:,.2f}**")
 
-# === PRICE FETCH === (unchanged)
+# === PRICE FETCH ===
 @st.cache_data(ttl=300)
 def fetch_prices(tickers_list):
     try:
@@ -229,7 +270,7 @@ def fetch_prices(tickers_list):
 
 prices = fetch_prices(list(etfs.keys()))
 
-# === PORTFOLIO CALCULATIONS === (unchanged)
+# === PORTFOLIO CALCULATIONS ===
 gross_value = sum(float(etfs[t].get("shares", 0)) * prices.get(t, 0) for t in etfs)
 total_capital_added = initial_capital + sum(a.get("amount", 0) for a in capital_additions)
 net_equity = gross_value - margin
@@ -237,7 +278,7 @@ profit = net_equity - total_capital_added
 pct_to_m = max(0, (net_equity / 1000000) * 100) if net_equity > 0 else 0
 monthly_premium_est = sum(h.get("premium", 0) for h in history[-4:]) if history else 0
 
-# === DASHBOARD === (unchanged)
+# === DASHBOARD ===
 st.success(f"Welcome back, {username}!")
 col1, col2, col3, col4, col5 = st.columns(5)
 col1.metric("Gross Portfolio", f"${gross_value:,.2f}")
@@ -248,7 +289,7 @@ col5.metric("Progress to $1M", f"{pct_to_m:.2f}%")
 
 st.caption(f"Monthly Premium Estimate: ${monthly_premium_est:,.2f} (Target: ${PREMIUM_TARGET_MONTHLY:,.0f})")
 
-# === CAPITAL & MARGIN === (unchanged)
+# === CAPITAL & MARGIN ===
 with st.expander("💰 Capital & Margin"):
     col1, col2 = st.columns(2)
     with col1:
@@ -275,7 +316,7 @@ with st.expander("💰 Capital & Margin"):
             st.success("Margin updated")
             st.rerun()
 
-# === MANAGE TICKERS & ADD NEW === (unchanged)
+# === MANAGE TICKERS & ADD NEW ===
 with st.expander("📈 Manage Tickers & Rebalance", expanded=True):
     st.subheader("Add New Ticker")
     col_add1, col_add2 = st.columns([3, 1])
@@ -304,7 +345,7 @@ with st.expander("📈 Manage Tickers & Rebalance", expanded=True):
             else:
                 st.warning("Ticker already exists or input invalid")
 
-# === OPTIONS / WHEEL SECTION === (unchanged + restored contracts update below)
+# === OPTIONS / WHEEL SECTION ===
 with st.expander("🛞 Options Trading & Weekly Wheel (Paper)"):
     st.subheader("Sell Weekly Call")
     ticker = st.selectbox("Ticker", list(etfs.keys()), key="opt_tkr")
@@ -378,37 +419,7 @@ with st.expander("🛞 Options Trading & Weekly Wheel (Paper)"):
             st.success("Assignments updated")
             st.rerun()
 
-# === NEW: UPDATE EXISTING CONTRACTS (restored + placed here) ===
-with st.expander("📊 Update Existing Options / Contracts", expanded=False):
-    st.subheader("Update Contracts for Ticker")
-    ct_tk = st.selectbox("Select Ticker", list(etfs.keys()), key="ct_update_tk")
-    if ct_tk:
-        col_week, col_owned = st.columns(2)
-        with col_week:
-            weekly = st.number_input(
-                "Weekly Contracts Sold",
-                min_value=0,
-                step=1,
-                value=int(etfs[ct_tk].get("weekly_contracts", 0)),
-                key="weekly_upd"
-            )
-        with col_owned:
-            owned = st.number_input(
-                "Total Contracts Owned (cumulative)",
-                min_value=0,
-                step=1,
-                value=int(etfs[ct_tk].get("contracts_sold", 0)),
-                key="owned_upd"
-            )
-        if st.button("Update Contracts"):
-            etfs[ct_tk]["weekly_contracts"] = weekly
-            etfs[ct_tk]["contracts_sold"] = owned
-            save_version({"etfs": etfs, "history": history, "initial_capital": initial_capital,
-                          "capital_additions": capital_additions, "option_trades": option_trades})
-            st.success(f"Contracts updated for **{ct_tk}**")
-            st.rerun()
-
-# === CURRENT HOLDINGS TABLE === (unchanged)
+# === CURRENT HOLDINGS TABLE ===
 st.subheader("Current Holdings")
 
 rows = []
@@ -463,53 +474,31 @@ st.dataframe(
     hide_index=True
 )
 
-# === MANUAL UPDATES – NOW WITH SELL / REDUCE SHARES ===
+# === MANUAL UPDATES ===
 with st.expander("📊 Manual Updates"):
     col_l, col_r = st.columns(2)
-    
     with col_l:
-        st.subheader("Add / Buy Shares")
-        tk_buy = st.selectbox("Ticker (Buy)", list(etfs.keys()), key="buy_tk_sel")
-        sh_buy = st.number_input("Shares to Buy", min_value=0.0001, step=0.0001, key="sh_buy")
-        pr_buy = st.number_input("Avg Buy Price", min_value=0.01, step=0.01, key="pr_buy")
+        st.subheader("Add Purchase")
+        tk = st.selectbox("Ticker", list(etfs.keys()), key="buy_tk")
+        sh = st.number_input("Shares", 0.0001, step=0.0001)
+        pr = st.number_input("Avg Price", 0.01, step=0.01)
         if st.button("Submit Buy"):
-            if sh_buy > 0 and pr_buy > 0:
-                old = etfs[tk_buy]
-                new_s = float(old["shares"]) + float(sh_buy)
-                new_b = (float(old["shares"]) * float(old["cost_basis"]) + float(sh_buy) * float(pr_buy)) / new_s if new_s > 0 else float(pr_buy)
-                etfs[tk_buy]["shares"] = new_s
-                etfs[tk_buy]["cost_basis"] = new_b
+            if sh > 0 and pr > 0:
+                old = etfs[tk]
+                new_s = float(old["shares"]) + float(sh)
+                new_b = (float(old["shares"]) * float(old["cost_basis"]) + float(sh) * float(pr)) / new_s if new_s > 0 else float(pr)
+                etfs[tk]["shares"] = new_s
+                etfs[tk]["cost_basis"] = new_b
                 history.append({"date": datetime.now().strftime("%Y-%m-%d"), "portfolio_value": gross_value, "margin_debt": float(margin), "premium": 0})
                 save_version({"etfs": etfs, "history": history, "initial_capital": initial_capital,
                               "capital_additions": capital_additions, "option_trades": option_trades})
-                st.success("Buy recorded")
+                st.success("Purchase added")
                 st.rerun()
 
     with col_r:
-        st.subheader("Sell / Reduce Shares")
-        tk_sell = st.selectbox("Ticker (Sell)", list(etfs.keys()), key="sell_tk_sel")
-        sh_sell = st.number_input("Shares to Sell", min_value=0.0001, step=0.0001, key="sh_sell")
-        if st.button("Submit Sell"):
-            if sh_sell > 0:
-                old = etfs[tk_sell]
-                current_shares = float(old["shares"])
-                if sh_sell > current_shares:
-                    st.error(f"Cannot sell more ({sh_sell}) than owned ({current_shares:.4f})")
-                else:
-                    new_shares = current_shares - float(sh_sell)
-                    # Cost basis remains the same (FIFO not implemented – simple average)
-                    etfs[tk_sell]["shares"] = new_shares
-                    if new_shares <= 0:
-                        etfs[tk_sell]["cost_basis"] = 0.0  # reset if fully sold
-                    history.append({"date": datetime.now().strftime("%Y-%m-%d"), "portfolio_value": gross_value, "margin_debt": float(margin), "premium": 0})
-                    save_version({"etfs": etfs, "history": history, "initial_capital": initial_capital,
-                                  "capital_additions": capital_additions, "option_trades": option_trades})
-                    st.success(f"Sold {sh_sell:.4f} shares of {tk_sell}")
-                    st.rerun()
-
         st.subheader("Record Premium")
         premium = st.number_input("Premium Received ($)", 0.0, step=10.0)
-        if st.button("Record Premium") and premium > 0:
+        if st.button("Record") and premium > 0:
             today = datetime.now().strftime("%Y-%m-%d")
             history.append({"date": today, "premium": float(premium), "portfolio_value": gross_value, "margin_debt": float(margin)})
             save_version({"etfs": etfs, "history": history, "initial_capital": initial_capital,
@@ -517,7 +506,7 @@ with st.expander("📊 Manual Updates"):
             st.success("Premium recorded")
             st.rerun()
 
-# === CHART === (unchanged)
+# === CHART ===
 st.subheader("Growth Tracker")
 if history:
     df = pd.DataFrame(history)
@@ -531,4 +520,4 @@ if history:
     fig.update_layout(height=550)
     st.plotly_chart(fig, use_container_width=True)
 
-st.caption("Wealth Growth Pro — persistent data + history restore + sell shares support")
+st.caption("Wealth Growth Pro — persistent with backup/restore buttons")

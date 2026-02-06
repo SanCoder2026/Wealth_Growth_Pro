@@ -171,7 +171,7 @@ with st.expander(f"🕒 Session History & Restore ({username})", expanded=False)
     else:
         st.info("No saved history yet — will appear after changes")
 
-    # === BACKUP DOWNLOAD & UPLOAD (new – survives app recreation) ===
+    # === BACKUP DOWNLOAD & UPLOAD ===
     st.markdown("---")
     st.markdown("### 💾 Manual Backup & Restore (use this when recreating app)")
 
@@ -204,7 +204,7 @@ with st.expander(f"🕒 Session History & Restore ({username})", expanded=False)
                 backup_data = json.load(uploaded)
                 required = ["etfs", "history", "initial_capital", "capital_additions", "option_trades"]
                 if all(k in backup_data for k in required):
-                    if st.button("Restore from Uploaded Backup", type="primary"):
+                    if st.button("Restore from this file (overwrites current data)", type="primary"):
                         with open(LATEST_FILE, "w") as f:
                             json.dump(backup_data, f, indent=2)
                         st.success("Backup restored! Refreshing page...")
@@ -345,7 +345,85 @@ with st.expander("📈 Manage Tickers & Rebalance", expanded=True):
             else:
                 st.warning("Ticker already exists or input invalid")
 
-# === OPTIONS / WHEEL SECTION ===
+# === UPDATE EXISTING OPTIONS / CONTRACTS ===
+with st.expander("📊 Update Existing Options / Contracts", expanded=False):
+    st.subheader("Update Contracts for Ticker")
+    ct_tk = st.selectbox("Select Ticker", list(etfs.keys()), key="ct_update_tk")
+    if ct_tk:
+        col_week, col_owned = st.columns(2)
+        with col_week:
+            weekly = st.number_input(
+                "Weekly Contracts Sold",
+                min_value=0,
+                step=1,
+                value=int(etfs[ct_tk].get("weekly_contracts", 0)),
+                key="weekly_upd"
+            )
+        with col_owned:
+            owned = st.number_input(
+                "Total Contracts Owned (cumulative)",
+                min_value=0,
+                step=1,
+                value=int(etfs[ct_tk].get("contracts_sold", 0)),
+                key="owned_upd"
+            )
+        col_strike, col_expiry = st.columns(2)
+        with col_strike:
+            strike = st.number_input(
+                "Current Strike Price (if applicable)",
+                min_value=0.0,
+                step=0.01,
+                value=0.0,
+                format="%.2f",
+                key="strike_upd"
+            )
+        with col_expiry:
+            expiry_date = st.date_input(
+                "Expiry Date (if applicable)",
+                value=datetime.now().date() + timedelta(days=7),
+                key="expiry_upd"
+            )
+        if st.button("Update Contracts & Position Info"):
+            etfs[ct_tk]["weekly_contracts"] = weekly
+            etfs[ct_tk]["contracts_sold"] = owned
+            # Optional: store strike and expiry in etfs for now (simple)
+            etfs[ct_tk]["current_strike"] = strike
+            etfs[ct_tk]["current_expiry"] = expiry_date.strftime("%Y-%m-%d")
+            save_version({"etfs": etfs, "history": history, "initial_capital": initial_capital,
+                          "capital_additions": capital_additions, "option_trades": option_trades})
+            st.success(f"Contracts & position info updated for **{ct_tk}**")
+            st.rerun()
+
+# === SUGGESTION FOR THE DAY ===
+with st.expander("📅 Suggestion for the Day", expanded=False):
+    st.subheader("Daily Option Management Suggestions")
+    suggestions = []
+    today = datetime.now().date()
+    
+    for trade in option_trades:
+        if trade.get("status") != "open":
+            continue
+        expiry = datetime.strptime(trade["expiry"], "%Y-%m-%d").date()
+        days_left = (expiry - today).days
+        current_price = prices.get(trade["ticker"], 0)
+        itm_otm = "ITM" if current_price > trade["strike"] else "OTM" if current_price < trade["strike"] else "ATM"
+        
+        status = f"{trade['ticker']} {trade['type']} @{trade['strike']} exp {trade['expiry']} ({days_left} days left) – {itm_otm}"
+        
+        if days_left <= 3:
+            suggestions.append(f"**URGENT – Roll or close soon**: {status}")
+        elif days_left <= 7:
+            suggestions.append(f"**Consider rolling**: {status}")
+        else:
+            suggestions.append(f"**Monitor**: {status}")
+    
+    if suggestions:
+        for s in suggestions:
+            st.write(s)
+    else:
+        st.info("No open option positions to suggest on today.")
+
+# === OPTIONS / WHEEL SECTION (moved lower) ===
 with st.expander("🛞 Options Trading & Weekly Wheel (Paper)"):
     st.subheader("Sell Weekly Call")
     ticker = st.selectbox("Ticker", list(etfs.keys()), key="opt_tkr")
@@ -496,6 +574,26 @@ with st.expander("📊 Manual Updates"):
                 st.rerun()
 
     with col_r:
+        st.subheader("Sell / Reduce Shares")
+        tk_sell = st.selectbox("Ticker (Sell)", list(etfs.keys()), key="sell_tk")
+        sh_sell = st.number_input("Shares to Sell", min_value=0.0001, step=0.0001)
+        if st.button("Submit Sell"):
+            if sh_sell > 0:
+                old = etfs[tk_sell]
+                current_shares = float(old["shares"])
+                if sh_sell > current_shares:
+                    st.error(f"Cannot sell more ({sh_sell:.4f}) than owned ({current_shares:.4f})")
+                else:
+                    new_shares = current_shares - float(sh_sell)
+                    etfs[tk_sell]["shares"] = new_shares
+                    if new_shares <= 0:
+                        etfs[tk_sell]["cost_basis"] = 0.0
+                    history.append({"date": datetime.now().strftime("%Y-%m-%d"), "portfolio_value": gross_value, "margin_debt": float(margin), "premium": 0})
+                    save_version({"etfs": etfs, "history": history, "initial_capital": initial_capital,
+                                  "capital_additions": capital_additions, "option_trades": option_trades})
+                    st.success(f"Sold {sh_sell:.4f} shares of {tk_sell}")
+                    st.rerun()
+
         st.subheader("Record Premium")
         premium = st.number_input("Premium Received ($)", 0.0, step=10.0)
         if st.button("Record") and premium > 0:
@@ -506,7 +604,7 @@ with st.expander("📊 Manual Updates"):
             st.success("Premium recorded")
             st.rerun()
 
-# === CHART ===
+# === GROWTH CHART ===
 st.subheader("Growth Tracker")
 if history:
     df = pd.DataFrame(history)
@@ -520,4 +618,4 @@ if history:
     fig.update_layout(height=550)
     st.plotly_chart(fig, use_container_width=True)
 
-st.caption("Wealth Growth Pro — persistent with backup/restore buttons")
+st.caption("Wealth Growth Pro — with backup/restore, sell shares, and updated contracts section")

@@ -1,13 +1,16 @@
 import streamlit as st
 import pandas as pd
 import plotly.graph_objects as go
-from datetime import datetime
-import gspread
-from google.oauth2.service_account import Credentials
+import json
+import os
+from datetime import datetime, timedelta
+import glob
+import shutil
 import yfinance as yf
 
 # === CONFIG ===
 st.set_page_config(page_title="Wealth Growth Pro → $1M", layout="wide", initial_sidebar_state="expanded")
+PREMIUM_TARGET_MONTHLY = 100000.0
 
 st.markdown(
     """
@@ -16,7 +19,7 @@ st.markdown(
         Wealth Growth Pro
     </h1>
     <p style='text-align: center; color: #444; font-size: 1.4rem; margin-top: -15px; margin-bottom: 30px;'>
-        → Building Toward $1 Million • Google Sheets Backend ("Option" Spreadsheet)
+        → Building Toward $1 Million with Discipline & Strategy (JSON + Backup)
     </p>
     <hr style='border-top: 3px solid #1E90FF;'>
     """,
@@ -28,114 +31,6 @@ TARGET_ALLOCATIONS = {
     "IAU": 0.06, "COPX": 0.06, "UPRO": 0.06, "UAMY": 0.01,
 }
 
-# === GOOGLE SHEETS CLIENT ===
-@st.cache_resource(show_spinner="Connecting to Google Sheets...")
-def get_gspread_client():
-    try:
-        creds_dict = dict(st.secrets["gcp_service_account"])
-        if "token_uri" not in creds_dict:
-            creds_dict["token_uri"] = "https://oauth2.googleapis.com/token"
-        if "auth_uri" not in creds_dict:
-            creds_dict["auth_uri"] = "https://accounts.google.com/o/oauth2/auth"
-        
-        scopes = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
-        credentials = Credentials.from_service_account_info(creds_dict, scopes=scopes)
-        return gspread.authorize(credentials)
-    except Exception as e:
-        st.error(f"Google Sheets connection failed: {str(e)}")
-        st.stop()
-
-gc = get_gspread_client()
-
-try:
-    sh = gc.open("Option")
-except Exception as e:
-    st.error(f"Could not open spreadsheet 'Option'. Error: {str(e)}")
-    st.stop()
-
-def get_worksheet(name):
-    try:
-        return sh.worksheet(name)
-    except gspread.exceptions.WorksheetNotFound:
-        return sh.add_worksheet(title=name, rows=500, cols=20)
-
-ws_etfs = get_worksheet("ETFs")
-ws_history = get_worksheet("History")
-ws_capital = get_worksheet("Capital")
-ws_options = get_worksheet("Options")
-
-# === SAFE LOAD FUNCTIONS ===
-def safe_get_records(ws, expected_headers=None):
-    values = ws.get_all_values()
-    if not values:
-        return []
-    # If first row looks like data (not headers), insert headers
-    if values and (not values[0] or any(h == "" for h in values[0])):
-        if expected_headers:
-            ws.insert_row(expected_headers, 1)
-            values = ws.get_all_values()
-    try:
-        return ws.get_all_records(default_blank="")
-    except:
-        # Fallback
-        if len(values) > 1:
-            df = pd.DataFrame(values[1:], columns=values[0])
-            return df.to_dict('records')
-        return []
-
-def load_etfs():
-    records = safe_get_records(ws_etfs, ["Ticker", "Shares", "CostBasis", "TargetPct", "ContractsSold", "WeeklyContracts"])
-    etfs = {}
-    for r in records:
-        if r.get("Ticker"):
-            etfs[r["Ticker"]] = {
-                "shares": float(r.get("Shares", 0)),
-                "cost_basis": float(r.get("CostBasis", 0)),
-                "target_pct": float(r.get("TargetPct", TARGET_ALLOCATIONS.get(r["Ticker"], 0.01))),
-                "contracts_sold": int(r.get("ContractsSold", 0)),
-                "weekly_contracts": int(r.get("WeeklyContracts", 0)),
-            }
-    return etfs
-
-def load_history():
-    records = safe_get_records(ws_history, ["Date", "portfolio_value", "margin_debt", "premium", "note"])
-    for rec in records:
-        for key in ["portfolio_value", "margin_debt", "premium"]:
-            if key in rec:
-                try:
-                    rec[key] = float(rec[key]) if rec[key] != "" else 0.0
-                except:
-                    rec[key] = 0.0
-    return records
-
-def load_capital():
-    records = safe_get_records(ws_capital, ["Date", "AdditionAmount", "CashBalance", "MarginDebt", "InitialCapital", "Note"])
-    initial = 0.0
-    cash = 0.0
-    margin = 0.0
-    additions = []
-    for r in records:
-        try:
-            if r.get("InitialCapital"):
-                initial = float(r.get("InitialCapital", 0))
-            if r.get("CashBalance"):
-                cash = float(r.get("CashBalance", 0))
-            if r.get("MarginDebt"):
-                margin = float(r.get("MarginDebt", 0))
-            if r.get("AdditionAmount"):
-                additions.append({"date": r.get("Date"), "amount": float(r.get("AdditionAmount", 0))})
-        except:
-            pass
-    return initial, cash, margin, additions
-
-def load_options():
-    return safe_get_records(ws_options, ["ticker", "type", "strike", "expiry", "contracts", "premium", "status"])
-
-etfs = load_etfs()
-history = load_history()
-initial_capital, cash_balance, margin, capital_additions = load_capital()
-option_trades = load_options()
-
 # === USERNAME ===
 if "username" not in st.session_state:
     st.session_state.username = "Investor"
@@ -144,19 +39,60 @@ username = st.text_input("👤 User Name", value=st.session_state.username, key=
 if username != st.session_state.username:
     st.session_state.username = username
 
+DATA_DIR = f"data/{username}/"
+LATEST_FILE = f"{DATA_DIR}{username}_latest.json"
+HISTORY_DIR = f"{DATA_DIR}{username}_history/"
+os.makedirs(DATA_DIR, exist_ok=True)
+os.makedirs(HISTORY_DIR, exist_ok=True)
+
+# === LOAD / SAVE ===
+def save_version(data):
+    timestamp = datetime.now().strftime("%Y-%m-%d_%H%M%S")
+    version_file = f"{HISTORY_DIR}{timestamp}.json"
+    with open(version_file, "w") as f:
+        json.dump(data, f, indent=2)
+    with open(LATEST_FILE, "w") as f:
+        json.dump(data, f, indent=2)
+
+def load_latest():
+    if os.path.exists(LATEST_FILE):
+        try:
+            with open(LATEST_FILE, "r") as f:
+                return json.load(f)
+        except:
+            pass
+    # Default data
+    default_etfs = {ticker: {"shares": 0.0, "cost_basis": 0.0, "target_pct": pct, "contracts_sold": 0, "weekly_contracts": 0}
+                    for ticker, pct in TARGET_ALLOCATIONS.items()}
+    return {
+        "etfs": default_etfs,
+        "history": [],
+        "initial_capital": 0.0,
+        "capital_additions": [],
+        "option_trades": [],
+        "cash_balance": 0.0
+    }
+
+data = load_latest()
+etfs = data.get("etfs", {})
+history = data.get("history", [])
+initial_capital = float(data.get("initial_capital", 0.0))
+capital_additions = data.get("capital_additions", [])
+option_trades = data.get("option_trades", [])
+cash_balance = float(data.get("cash_balance", 0.0))
+margin = 0.0
+
 # === PRICE FETCH ===
 @st.cache_data(ttl=300)
 def fetch_prices(tickers):
-    if not tickers:
-        return {}
     try:
-        data = yf.Tickers(" ".join(tickers))
-        return {t: round(data.tickers[t].info.get("currentPrice") or data.tickers[t].info.get("regularMarketPrice", 0), 4)
+        data_ = yf.Tickers(" ".join(tickers))
+        return {t: round(data_.tickers[t].info.get('currentPrice') or data_.tickers[t].info.get('regularMarketPrice', 0), 4)
                 for t in tickers}
     except:
         return {t: 0 for t in tickers}
 
-prices = fetch_prices(list(etfs.keys()) or list(TARGET_ALLOCATIONS.keys()))
+prices = fetch_prices(list(etfs.keys()))
 
 # === CALCULATIONS ===
 gross_value = sum(etfs.get(t, {}).get("shares", 0) * prices.get(t, 0) for t in etfs)
@@ -165,7 +101,7 @@ net_equity = gross_value - margin + cash_balance
 profit = net_equity - total_capital_added
 pct_to_m = (net_equity / 1_000_000) * 100 if net_equity > 0 else 0
 
-st.success(f"Welcome back, **{st.session_state.username}**!")
+st.success(f"Welcome back, **{username}**!")
 
 col1, col2, col3, col4, col5 = st.columns(5)
 col1.metric("Gross Portfolio", f"${gross_value:,.2f}")
@@ -185,7 +121,9 @@ with st.expander("💰 Capital, Margin & Cash Management", expanded=True):
         if st.button("Add Capital") and amt > 0:
             date_str = datetime.now().strftime("%Y-%m-%d")
             cash_balance += amt
-            ws_capital.append_row([date_str, amt, cash_balance, margin, initial_capital, "Capital Added"])
+            capital_additions.append({"date": date_str, "amount": float(amt)})
+            save_version({"etfs": etfs, "history": history, "initial_capital": initial_capital,
+                          "capital_additions": capital_additions, "option_trades": option_trades, "cash_balance": cash_balance})
             st.success(f"Added ${amt:,.2f}")
             st.rerun()
 
@@ -194,7 +132,8 @@ with st.expander("💰 Capital, Margin & Cash Management", expanded=True):
         new_margin = st.number_input("Margin ($)", value=float(margin), step=100.0)
         if st.button("Update Margin"):
             margin = new_margin
-            ws_capital.append_row([datetime.now().strftime("%Y-%m-%d"), 0, cash_balance, margin, initial_capital, "Margin Update"])
+            save_version({"etfs": etfs, "history": history, "initial_capital": initial_capital,
+                          "capital_additions": capital_additions, "option_trades": option_trades, "cash_balance": cash_balance})
             st.success("Margin updated")
             st.rerun()
 
@@ -203,27 +142,27 @@ with st.expander("💰 Capital, Margin & Cash Management", expanded=True):
         new_cash = st.number_input("Cash ($)", value=float(cash_balance), step=100.0)
         if st.button("Update Cash"):
             cash_balance = new_cash
-            ws_capital.append_row([datetime.now().strftime("%Y-%m-%d"), 0, cash_balance, margin, initial_capital, "Cash Update"])
+            save_version({"etfs": etfs, "history": history, "initial_capital": initial_capital,
+                          "capital_additions": capital_additions, "option_trades": option_trades, "cash_balance": cash_balance})
             st.success(f"Cash set to ${cash_balance:,.2f}")
             st.rerun()
 
-# Open Options Table (same as before)
+# === OPEN OPTIONS TABLE ===
 st.subheader("🛡️ Open Options Positions")
-open_opts = [t for t in option_trades if str(t.get("status", "")).lower() == "open"]
+open_opts = [t for t in option_trades if t.get("status") == "open"]
 
 if open_opts:
     rows = []
     today = datetime.now().date()
     for t in open_opts:
         try:
-            expiry_dt = datetime.strptime(str(t.get("expiry", "")), "%Y-%m-%d").date()
+            expiry_dt = datetime.strptime(t.get("expiry", ""), "%Y-%m-%d").date()
             dte = max(0, (expiry_dt - today).days)
         except:
             dte = 0
         price = prices.get(t.get("ticker"), 0)
-        otm_pct = 0.12 if "SOXL" in str(t.get("ticker", "")) else 0.09 if "TQQQ" in str(t.get("ticker", "")) else 0.07
+        otm_pct = 0.12 if "SOXL" in t.get("ticker", "") else 0.09 if "TQQQ" in t.get("ticker", "") else 0.07
         sugg_roll = round(price * (1 + otm_pct), 2) if price > 0 else 0
-
         rows.append({
             "Ticker": t.get("ticker", ""),
             "Contracts": int(t.get("contracts", 0)),
@@ -237,7 +176,7 @@ if open_opts:
 else:
     st.info("No open option positions yet.")
 
-# Growth charts (kept same as previous version)
+# === GROWTH TRACKER + MONTHLY PREMIUM ===
 st.subheader("Growth Tracker")
 if history:
     df = pd.DataFrame(history)
@@ -262,4 +201,39 @@ if history:
     fig_bar.update_layout(height=400, xaxis_title="Month", yaxis_title="Premium ($)")
     st.plotly_chart(fig_bar, use_container_width=True)
 
-st.caption("✅ All data saved live to your 'Option' Google Spreadsheet.")
+# === BACKUP SECTION ===
+with st.expander("💾 Backup & Restore"):
+    col_dl, col_ul = st.columns(2)
+    with col_dl:
+        if st.button("⬇️ Download Full Backup"):
+            backup = {
+                "etfs": etfs,
+                "history": history,
+                "initial_capital": initial_capital,
+                "capital_additions": capital_additions,
+                "option_trades": option_trades,
+                "cash_balance": cash_balance,
+                "timestamp": datetime.now().isoformat(),
+                "username": username
+            }
+            json_str = json.dumps(backup, indent=2)
+            st.download_button(
+                label="Download wealthgrowth_backup.json",
+                data=json_str,
+                file_name=f"wealthgrowth_{username}_{datetime.now().strftime('%Y%m%d_%H%M')}.json",
+                mime="application/json"
+            )
+    with col_ul:
+        uploaded = st.file_uploader("Upload backup JSON", type=["json"])
+        if uploaded:
+            try:
+                backup_data = json.load(uploaded)
+                if st.button("Restore from this file"):
+                    with open(LATEST_FILE, "w") as f:
+                        json.dump(backup_data, f, indent=2)
+                    st.success("Backup restored! Refreshing...")
+                    st.rerun()
+            except Exception as e:
+                st.error(f"Error: {str(e)}")
+
+st.caption("Data saved locally as JSON. Use Download/Upload for phone ↔ desktop sync.")

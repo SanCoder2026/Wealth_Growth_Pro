@@ -8,7 +8,6 @@ import yfinance as yf
 
 # === CONFIG ===
 st.set_page_config(page_title="Wealth Growth Pro → $1M", layout="wide", initial_sidebar_state="expanded")
-PREMIUM_TARGET_MONTHLY = 100000.0
 
 st.markdown(
     """
@@ -57,7 +56,6 @@ except Exception as e:
     st.error(f"Could not open spreadsheet 'Option'. Error: {str(e)}")
     st.stop()
 
-# Get or create worksheets
 def get_worksheet(name):
     try:
         return sh.worksheet(name)
@@ -69,7 +67,7 @@ ws_history = get_worksheet("History")
 ws_capital = get_worksheet("Capital")
 ws_options = get_worksheet("Options")
 
-# === LOAD DATA (Fixed) ===
+# === LOAD DATA ===
 def load_etfs():
     records = ws_etfs.get_all_records(default_blank="")
     etfs = {}
@@ -86,7 +84,6 @@ def load_etfs():
 
 def load_history():
     records = ws_history.get_all_records(default_blank="")
-    # Convert numeric fields safely
     for rec in records:
         for key in ["portfolio_value", "margin_debt", "premium"]:
             if key in rec:
@@ -103,26 +100,17 @@ def load_capital():
     margin = 0.0
     additions = []
     for r in records:
-        if r.get("InitialCapital"):
-            try:
+        try:
+            if r.get("InitialCapital"):
                 initial = float(r.get("InitialCapital", 0))
-            except:
-                pass
-        if r.get("CashBalance"):
-            try:
+            if r.get("CashBalance"):
                 cash = float(r.get("CashBalance", 0))
-            except:
-                pass
-        if r.get("MarginDebt"):
-            try:
+            if r.get("MarginDebt"):
                 margin = float(r.get("MarginDebt", 0))
-            except:
-                pass
-        if r.get("AdditionAmount"):
-            try:
+            if r.get("AdditionAmount"):
                 additions.append({"date": r.get("Date"), "amount": float(r.get("AdditionAmount", 0))})
-            except:
-                pass
+        except:
+            pass
     return initial, cash, margin, additions
 
 def load_options():
@@ -133,9 +121,15 @@ history = load_history()
 initial_capital, cash_balance, margin, capital_additions = load_capital()
 option_trades = load_options()
 
-# Username
-username = st.text_input("👤 User Name", value=st.session_state.get("username", "Investor"), key="username")
-st.session_state.username = username
+# === USERNAME (Fixed - initialize first) ===
+if "username" not in st.session_state:
+    st.session_state.username = "Investor"
+
+username = st.text_input("👤 User Name", value=st.session_state.username, key="username_input")
+
+# Update session state only if changed
+if username != st.session_state.username:
+    st.session_state.username = username
 
 # === PRICE FETCH ===
 @st.cache_data(ttl=300)
@@ -158,7 +152,8 @@ net_equity = gross_value - margin + cash_balance
 profit = net_equity - total_capital_added
 pct_to_m = (net_equity / 1_000_000) * 100 if net_equity > 0 else 0
 
-st.success(f"Welcome back, **{username}**! Data loaded from Google Sheets.")
+st.success(f"Welcome back, **{st.session_state.username}**! Data loaded from Google Sheets.")
+
 col1, col2, col3, col4, col5 = st.columns(5)
 col1.metric("Gross Portfolio", f"${gross_value:,.2f}")
 col2.metric("Margin Debt", f"${margin:,.2f}")
@@ -201,7 +196,7 @@ with st.expander("💰 Capital, Margin & Cash Management", expanded=True):
 
 # === OPEN OPTIONS TABLE ===
 st.subheader("🛡️ Open Options Positions")
-open_opts = [t for t in option_trades if t.get("status") == "open"]
+open_opts = [t for t in option_trades if str(t.get("status", "")).lower() == "open"]
 
 if open_opts:
     rows = []
@@ -233,9 +228,9 @@ else:
 st.subheader("Growth Tracker")
 if history:
     df = pd.DataFrame(history)
-    df["date"] = pd.to_datetime(df.get("date", pd.Series([])), errors="coerce")
+    df["date"] = pd.to_datetime(df.get("date"), errors="coerce")
     df = df.dropna(subset=["date"])
-    df["cum_premium"] = df.get("premium", 0).cumsum()
+    df["cum_premium"] = pd.to_numeric(df.get("premium", 0), errors='coerce').fillna(0).cumsum()
 
     fig = go.Figure()
     fig.add_trace(go.Scatter(x=df["date"], y=df.get("portfolio_value", 0), name="Gross Value", line=dict(color="#1E90FF")))
@@ -247,7 +242,7 @@ if history:
 st.subheader("📅 Monthly Premium Income")
 if history:
     dfh = pd.DataFrame(history)
-    dfh["date"] = pd.to_datetime(dfh.get("date", pd.Series([])), errors="coerce")
+    dfh["date"] = pd.to_datetime(dfh.get("date"), errors="coerce")
     dfh["month"] = dfh["date"].dt.strftime("%Y-%m")
     monthly = dfh.groupby("month")["premium"].sum().reset_index()
     fig_bar = go.Figure(go.Bar(x=monthly["month"], y=monthly["premium"], marker_color="#1E90FF"))

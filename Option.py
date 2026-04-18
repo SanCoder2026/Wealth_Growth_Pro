@@ -29,11 +29,16 @@ TARGET_ALLOCATIONS = {
     "IAU": 0.06, "COPX": 0.06, "UPRO": 0.06, "UAMY": 0.01,
 }
 
-# === IMPROVED GOOGLE SHEETS CLIENT ===
+# === GOOGLE SHEETS CLIENT ===
 @st.cache_resource(show_spinner="Connecting to Google Sheets...")
 def get_gspread_client():
     try:
         creds_dict = dict(st.secrets["gcp_service_account"])
+        if "token_uri" not in creds_dict:
+            creds_dict["token_uri"] = "https://oauth2.googleapis.com/token"
+        if "auth_uri" not in creds_dict:
+            creds_dict["auth_uri"] = "https://accounts.google.com/o/oauth2/auth"
+        
         scopes = [
             "https://www.googleapis.com/auth/spreadsheets",
             "https://www.googleapis.com/auth/drive"
@@ -41,16 +46,15 @@ def get_gspread_client():
         credentials = Credentials.from_service_account_info(creds_dict, scopes=scopes)
         return gspread.authorize(credentials)
     except Exception as e:
-        st.error(f"Failed to connect to Google Sheets. Check your secrets. Error: {str(e)}")
+        st.error(f"Google Sheets connection failed: {str(e)}")
         st.stop()
 
 gc = get_gspread_client()
 
-# Open spreadsheet by name "Option"
 try:
     sh = gc.open("Option")
 except Exception as e:
-    st.error(f"Could not open spreadsheet named **Option**. Make sure it exists and the service account has Editor access. Error: {str(e)}")
+    st.error(f"Could not open spreadsheet 'Option'. Error: {str(e)}")
     st.stop()
 
 # Get or create worksheets
@@ -65,9 +69,9 @@ ws_history = get_worksheet("History")
 ws_capital = get_worksheet("Capital")
 ws_options = get_worksheet("Options")
 
-# === LOAD DATA (simplified for now) ===
+# === LOAD DATA (Fixed) ===
 def load_etfs():
-    records = ws_etfs.get_all_records()
+    records = ws_etfs.get_all_records(default_blank="")
     etfs = {}
     for r in records:
         if r.get("Ticker"):
@@ -81,27 +85,48 @@ def load_etfs():
     return etfs
 
 def load_history():
-    return ws_history.get_all_records(default_value=0)
+    records = ws_history.get_all_records(default_blank="")
+    # Convert numeric fields safely
+    for rec in records:
+        for key in ["portfolio_value", "margin_debt", "premium"]:
+            if key in rec:
+                try:
+                    rec[key] = float(rec[key]) if rec[key] != "" else 0.0
+                except:
+                    rec[key] = 0.0
+    return records
 
 def load_capital():
-    records = ws_capital.get_all_records()
+    records = ws_capital.get_all_records(default_blank="")
     initial = 0.0
     cash = 0.0
     margin = 0.0
     additions = []
     for r in records:
         if r.get("InitialCapital"):
-            initial = float(r.get("InitialCapital", 0))
+            try:
+                initial = float(r.get("InitialCapital", 0))
+            except:
+                pass
         if r.get("CashBalance"):
-            cash = float(r.get("CashBalance", 0))
+            try:
+                cash = float(r.get("CashBalance", 0))
+            except:
+                pass
         if r.get("MarginDebt"):
-            margin = float(r.get("MarginDebt", 0))
+            try:
+                margin = float(r.get("MarginDebt", 0))
+            except:
+                pass
         if r.get("AdditionAmount"):
-            additions.append({"date": r.get("Date"), "amount": float(r.get("AdditionAmount", 0))})
+            try:
+                additions.append({"date": r.get("Date"), "amount": float(r.get("AdditionAmount", 0))})
+            except:
+                pass
     return initial, cash, margin, additions
 
 def load_options():
-    return ws_options.get_all_records()
+    return ws_options.get_all_records(default_blank="")
 
 etfs = load_etfs()
 history = load_history()
@@ -133,7 +158,7 @@ net_equity = gross_value - margin + cash_balance
 profit = net_equity - total_capital_added
 pct_to_m = (net_equity / 1_000_000) * 100 if net_equity > 0 else 0
 
-st.success(f"Welcome back, **{username}**! Connected to Google Sheets.")
+st.success(f"Welcome back, **{username}**! Data loaded from Google Sheets.")
 col1, col2, col3, col4, col5 = st.columns(5)
 col1.metric("Gross Portfolio", f"${gross_value:,.2f}")
 col2.metric("Margin Debt", f"${margin:,.2f}")
@@ -202,13 +227,13 @@ if open_opts:
         })
     st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
 else:
-    st.info("No open option positions yet. Sell weekly calls to see them here.")
+    st.info("No open option positions yet.")
 
 # === GROWTH TRACKER + MONTHLY PREMIUM ===
 st.subheader("Growth Tracker")
 if history:
     df = pd.DataFrame(history)
-    df["date"] = pd.to_datetime(df["date"], errors="coerce")
+    df["date"] = pd.to_datetime(df.get("date", pd.Series([])), errors="coerce")
     df = df.dropna(subset=["date"])
     df["cum_premium"] = df.get("premium", 0).cumsum()
 
@@ -222,11 +247,11 @@ if history:
 st.subheader("📅 Monthly Premium Income")
 if history:
     dfh = pd.DataFrame(history)
-    dfh["date"] = pd.to_datetime(dfh["date"], errors="coerce")
+    dfh["date"] = pd.to_datetime(dfh.get("date", pd.Series([])), errors="coerce")
     dfh["month"] = dfh["date"].dt.strftime("%Y-%m")
     monthly = dfh.groupby("month")["premium"].sum().reset_index()
     fig_bar = go.Figure(go.Bar(x=monthly["month"], y=monthly["premium"], marker_color="#1E90FF"))
     fig_bar.update_layout(height=400, xaxis_title="Month", yaxis_title="Premium ($)")
     st.plotly_chart(fig_bar, use_container_width=True)
 
-st.caption("✅ All data saved live to your 'Option' Google Spreadsheet. Works on phone & desktop!")
+st.caption("✅ All data saved live to your 'Option' Google Spreadsheet.")

@@ -38,10 +38,7 @@ def get_gspread_client():
         if "auth_uri" not in creds_dict:
             creds_dict["auth_uri"] = "https://accounts.google.com/o/oauth2/auth"
         
-        scopes = [
-            "https://www.googleapis.com/auth/spreadsheets",
-            "https://www.googleapis.com/auth/drive"
-        ]
+        scopes = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
         credentials = Credentials.from_service_account_info(creds_dict, scopes=scopes)
         return gspread.authorize(credentials)
     except Exception as e:
@@ -67,9 +64,27 @@ ws_history = get_worksheet("History")
 ws_capital = get_worksheet("Capital")
 ws_options = get_worksheet("Options")
 
-# === LOAD DATA ===
+# === SAFE LOAD FUNCTIONS ===
+def safe_get_records(ws, expected_headers=None):
+    values = ws.get_all_values()
+    if not values:
+        return []
+    # If first row looks like data (not headers), insert headers
+    if values and (not values[0] or any(h == "" for h in values[0])):
+        if expected_headers:
+            ws.insert_row(expected_headers, 1)
+            values = ws.get_all_values()
+    try:
+        return ws.get_all_records(default_blank="")
+    except:
+        # Fallback
+        if len(values) > 1:
+            df = pd.DataFrame(values[1:], columns=values[0])
+            return df.to_dict('records')
+        return []
+
 def load_etfs():
-    records = ws_etfs.get_all_records(default_blank="")
+    records = safe_get_records(ws_etfs, ["Ticker", "Shares", "CostBasis", "TargetPct", "ContractsSold", "WeeklyContracts"])
     etfs = {}
     for r in records:
         if r.get("Ticker"):
@@ -83,7 +98,7 @@ def load_etfs():
     return etfs
 
 def load_history():
-    records = ws_history.get_all_records(default_blank="")
+    records = safe_get_records(ws_history, ["Date", "portfolio_value", "margin_debt", "premium", "note"])
     for rec in records:
         for key in ["portfolio_value", "margin_debt", "premium"]:
             if key in rec:
@@ -94,7 +109,7 @@ def load_history():
     return records
 
 def load_capital():
-    records = ws_capital.get_all_records(default_blank="")
+    records = safe_get_records(ws_capital, ["Date", "AdditionAmount", "CashBalance", "MarginDebt", "InitialCapital", "Note"])
     initial = 0.0
     cash = 0.0
     margin = 0.0
@@ -114,20 +129,18 @@ def load_capital():
     return initial, cash, margin, additions
 
 def load_options():
-    return ws_options.get_all_records(default_blank="")
+    return safe_get_records(ws_options, ["ticker", "type", "strike", "expiry", "contracts", "premium", "status"])
 
 etfs = load_etfs()
 history = load_history()
 initial_capital, cash_balance, margin, capital_additions = load_capital()
 option_trades = load_options()
 
-# === USERNAME (Fixed - initialize first) ===
+# === USERNAME ===
 if "username" not in st.session_state:
     st.session_state.username = "Investor"
 
 username = st.text_input("👤 User Name", value=st.session_state.username, key="username_input")
-
-# Update session state only if changed
 if username != st.session_state.username:
     st.session_state.username = username
 
@@ -152,7 +165,7 @@ net_equity = gross_value - margin + cash_balance
 profit = net_equity - total_capital_added
 pct_to_m = (net_equity / 1_000_000) * 100 if net_equity > 0 else 0
 
-st.success(f"Welcome back, **{st.session_state.username}**! Data loaded from Google Sheets.")
+st.success(f"Welcome back, **{st.session_state.username}**!")
 
 col1, col2, col3, col4, col5 = st.columns(5)
 col1.metric("Gross Portfolio", f"${gross_value:,.2f}")
@@ -194,7 +207,7 @@ with st.expander("💰 Capital, Margin & Cash Management", expanded=True):
             st.success(f"Cash set to ${cash_balance:,.2f}")
             st.rerun()
 
-# === OPEN OPTIONS TABLE ===
+# Open Options Table (same as before)
 st.subheader("🛡️ Open Options Positions")
 open_opts = [t for t in option_trades if str(t.get("status", "")).lower() == "open"]
 
@@ -224,7 +237,7 @@ if open_opts:
 else:
     st.info("No open option positions yet.")
 
-# === GROWTH TRACKER + MONTHLY PREMIUM ===
+# Growth charts (kept same as previous version)
 st.subheader("Growth Tracker")
 if history:
     df = pd.DataFrame(history)

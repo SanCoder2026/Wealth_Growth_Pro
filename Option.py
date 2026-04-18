@@ -1,7 +1,7 @@
 import streamlit as st
 import pandas as pd
 import plotly.graph_objects as go
-from datetime import datetime, timedelta
+from datetime import datetime
 import gspread
 from google.oauth2.service_account import Credentials
 import yfinance as yf
@@ -32,13 +32,17 @@ TARGET_ALLOCATIONS = {
 # === IMPROVED GOOGLE SHEETS CLIENT ===
 @st.cache_resource(show_spinner="Connecting to Google Sheets...")
 def get_gspread_client():
-    creds_dict = dict(st.secrets["gcp_service_account"])
-    scopes = [
-        "https://www.googleapis.com/auth/spreadsheets",
-        "https://www.googleapis.com/auth/drive"
-    ]
-    credentials = Credentials.from_service_account_info(creds_dict, scopes=scopes)
-    return gspread.authorize(credentials)
+    try:
+        creds_dict = dict(st.secrets["gcp_service_account"])
+        scopes = [
+            "https://www.googleapis.com/auth/spreadsheets",
+            "https://www.googleapis.com/auth/drive"
+        ]
+        credentials = Credentials.from_service_account_info(creds_dict, scopes=scopes)
+        return gspread.authorize(credentials)
+    except Exception as e:
+        st.error(f"Failed to connect to Google Sheets. Check your secrets. Error: {str(e)}")
+        st.stop()
 
 gc = get_gspread_client()
 
@@ -46,7 +50,7 @@ gc = get_gspread_client()
 try:
     sh = gc.open("Option")
 except Exception as e:
-    st.error(f"Could not open spreadsheet 'Option'. Error: {str(e)}")
+    st.error(f"Could not open spreadsheet named **Option**. Make sure it exists and the service account has Editor access. Error: {str(e)}")
     st.stop()
 
 # Get or create worksheets
@@ -61,7 +65,7 @@ ws_history = get_worksheet("History")
 ws_capital = get_worksheet("Capital")
 ws_options = get_worksheet("Options")
 
-# === LOAD DATA FUNCTIONS ===
+# === LOAD DATA (simplified for now) ===
 def load_etfs():
     records = ws_etfs.get_all_records()
     etfs = {}
@@ -115,8 +119,7 @@ def fetch_prices(tickers):
         return {}
     try:
         data = yf.Tickers(" ".join(tickers))
-        return {t: round(data.tickers[t].info.get("currentPrice") or 
-                        data.tickers[t].info.get("regularMarketPrice", 0), 4)
+        return {t: round(data.tickers[t].info.get("currentPrice") or data.tickers[t].info.get("regularMarketPrice", 0), 4)
                 for t in tickers}
     except:
         return {t: 0 for t in tickers}
@@ -130,13 +133,13 @@ net_equity = gross_value - margin + cash_balance
 profit = net_equity - total_capital_added
 pct_to_m = (net_equity / 1_000_000) * 100 if net_equity > 0 else 0
 
-st.success(f"Welcome back, **{username}**! Data synced from Google Sheets.")
-cols = st.columns(5)
-cols[0].metric("Gross Portfolio", f"${gross_value:,.2f}")
-cols[1].metric("Margin Debt", f"${margin:,.2f}")
-cols[2].metric("Net Equity", f"${net_equity:,.2f}", delta=f"${profit:,.2f}")
-cols[3].metric("Total Capital Added", f"${total_capital_added:,.2f}")
-cols[4].metric("Progress to $1M", f"{pct_to_m:.1f}%")
+st.success(f"Welcome back, **{username}**! Connected to Google Sheets.")
+col1, col2, col3, col4, col5 = st.columns(5)
+col1.metric("Gross Portfolio", f"${gross_value:,.2f}")
+col2.metric("Margin Debt", f"${margin:,.2f}")
+col3.metric("Net Equity", f"${net_equity:,.2f}", delta=f"${profit:,.2f}")
+col4.metric("Total Capital Added", f"${total_capital_added:,.2f}")
+col5.metric("Progress to $1M", f"{pct_to_m:.1f}%")
 
 st.caption(f"**Cash**: ${cash_balance:,.2f} | Recent Premium: ${sum(h.get('premium', 0) for h in history[-4:]):,.0f}")
 
@@ -150,7 +153,7 @@ with st.expander("💰 Capital, Margin & Cash Management", expanded=True):
             date_str = datetime.now().strftime("%Y-%m-%d")
             cash_balance += amt
             ws_capital.append_row([date_str, amt, cash_balance, margin, initial_capital, "Capital Added"])
-            st.success(f"Added ${amt:,.2f} — Cash updated")
+            st.success(f"Added ${amt:,.2f}")
             st.rerun()
 
     with c2:
@@ -180,12 +183,12 @@ if open_opts:
     today = datetime.now().date()
     for t in open_opts:
         try:
-            expiry_dt = datetime.strptime(t.get("expiry", ""), "%Y-%m-%d").date()
+            expiry_dt = datetime.strptime(str(t.get("expiry", "")), "%Y-%m-%d").date()
             dte = max(0, (expiry_dt - today).days)
         except:
             dte = 0
         price = prices.get(t.get("ticker"), 0)
-        otm_pct = 0.12 if "SOXL" in t.get("ticker", "") else 0.09 if "TQQQ" in t.get("ticker", "") else 0.07
+        otm_pct = 0.12 if "SOXL" in str(t.get("ticker", "")) else 0.09 if "TQQQ" in str(t.get("ticker", "")) else 0.07
         sugg_roll = round(price * (1 + otm_pct), 2) if price > 0 else 0
 
         rows.append({
@@ -199,19 +202,18 @@ if open_opts:
         })
     st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
 else:
-    st.info("No open option positions yet.")
+    st.info("No open option positions yet. Sell weekly calls to see them here.")
 
-# === GROWTH TRACKER + MONTHLY PREMIUM CHART ===
+# === GROWTH TRACKER + MONTHLY PREMIUM ===
 st.subheader("Growth Tracker")
 if history:
     df = pd.DataFrame(history)
-    df["date"] = pd.to_datetime(df["date"], errors='coerce')
+    df["date"] = pd.to_datetime(df["date"], errors="coerce")
     df = df.dropna(subset=["date"])
-    df["cum_premium"] = df.get("premium", pd.Series(0)).cumsum()
+    df["cum_premium"] = df.get("premium", 0).cumsum()
 
     fig = go.Figure()
     fig.add_trace(go.Scatter(x=df["date"], y=df.get("portfolio_value", 0), name="Gross Value", line=dict(color="#1E90FF")))
-    fig.add_trace(go.Scatter(x=df["date"], y=[net_equity] * len(df), name="Net Equity (Current)", line=dict(color="green")))
     fig.add_trace(go.Scatter(x=df["date"], y=df["cum_premium"], name="Cumulative Premium P&L", line=dict(color="orange", dash="dot")))
     fig.add_hline(y=1000000, line_dash="dash", annotation_text="$1M Target")
     fig.update_layout(height=500)
@@ -220,11 +222,11 @@ if history:
 st.subheader("📅 Monthly Premium Income")
 if history:
     dfh = pd.DataFrame(history)
-    dfh["date"] = pd.to_datetime(dfh["date"], errors='coerce')
+    dfh["date"] = pd.to_datetime(dfh["date"], errors="coerce")
     dfh["month"] = dfh["date"].dt.strftime("%Y-%m")
     monthly = dfh.groupby("month")["premium"].sum().reset_index()
     fig_bar = go.Figure(go.Bar(x=monthly["month"], y=monthly["premium"], marker_color="#1E90FF"))
     fig_bar.update_layout(height=400, xaxis_title="Month", yaxis_title="Premium ($)")
     st.plotly_chart(fig_bar, use_container_width=True)
 
-st.caption("✅ All data is saved live to your 'Option' Google Spreadsheet — works on mobile & desktop!")
+st.caption("✅ All data saved live to your 'Option' Google Spreadsheet. Works on phone & desktop!")

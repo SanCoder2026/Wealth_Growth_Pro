@@ -28,17 +28,11 @@ st.markdown(
     unsafe_allow_html=True
 )
 
-# Target allocations (IBIT added as default)
+# Target allocations (IBIT added)
 TARGET_ALLOCATIONS = {
-    "SOXL": 0.30,
-    "SLV": 0.25,
-    "TQQQ": 0.16,
-    "URA": 0.10,
-    "IAU": 0.06,
-    "COPX": 0.06,
-    "UPRO": 0.06,
-    "UAMY": 0.01,
-    "IBIT": 0.05,          # New default ticker
+    "SOXL": 0.30, "SLV": 0.25, "TQQQ": 0.16, "URA": 0.10,
+    "IAU": 0.06, "COPX": 0.06, "UPRO": 0.06, "UAMY": 0.01,
+    "IBIT": 0.05,
 }
 
 # === USERNAME SECTION ===
@@ -178,7 +172,7 @@ with st.expander(f"🕒 Session History & Restore ({username})", expanded=False)
 
     # === BACKUP DOWNLOAD & UPLOAD ===
     st.markdown("---")
-    st.markdown("### 💾 Manual Backup & Restore (use this when recreating app)")
+    st.markdown("### 💾 Manual Backup & Restore")
 
     col_dl, col_ul = st.columns(2)
 
@@ -283,11 +277,23 @@ total_capital_added = initial_capital + sum(a.get("amount", 0) for a in capital_
 net_equity = gross_value - margin + cash_balance
 profit = net_equity - total_capital_added
 pct_to_m = max(0, (net_equity / 1000000) * 100) if net_equity > 0 else 0
+
+# === Monthly Premium Calculations ===
 monthly_premium_est = sum(h.get("premium", 0) for h in history[-4:]) if history else 0
+
+# Calculate average monthly premium so far this year
+current_year = datetime.now().year
+year_history = [h for h in history if pd.to_datetime(h.get("date", "")).year == current_year]
+monthly_premiums = {}
+for h in year_history:
+    month = pd.to_datetime(h.get("date", "")).strftime("%Y-%m")
+    monthly_premiums[month] = monthly_premiums.get(month, 0) + float(h.get("premium", 0))
+
+avg_monthly_premium = sum(monthly_premiums.values()) / len(monthly_premiums) if monthly_premiums else 0
 
 # === DASHBOARD ===
 st.success(f"Welcome back, {username}!")
-col1, col2, col3, col4, col5, col6 = st.columns(6)
+col1, col2, col3, col4, col5, col6, col7 = st.columns(7)
 col1.metric("Gross Portfolio", f"${gross_value:,.2f}")
 col2.metric("Current Margin", f"${margin:,.2f}")
 col3.metric("Net Equity", f"${net_equity:,.2f}", delta=f"${profit:,.2f}")
@@ -295,8 +301,10 @@ col4.metric("Total Capital Added", f"${total_capital_added:,.2f}")
 col5.metric("Progress to $1M", f"{pct_to_m:.2f}%")
 col6.metric("Profit / Loss", f"${profit:,.2f}", delta=f"${profit:,.2f}", 
             delta_color="normal" if profit >= 0 else "inverse")
+col7.metric("Avg Monthly Premium", f"${avg_monthly_premium:,.0f}", 
+            delta=f"{(avg_monthly_premium / PREMIUM_TARGET_MONTHLY * 100):.1f}% of $100K goal")
 
-st.caption(f"**Cash**: ${cash_balance:,.2f} | Monthly Premium Estimate: ${monthly_premium_est:,.2f} (Target: ${PREMIUM_TARGET_MONTHLY:,.0f})")
+st.caption(f"**Cash**: ${cash_balance:,.2f} | Recent 4-month Premium Est: ${monthly_premium_est:,.0f}")
 
 # === CAPITAL & MARGIN ===
 with st.expander("💰 Capital & Margin"):
@@ -345,19 +353,12 @@ with st.expander("📈 Manage Tickers & Rebalance", expanded=True):
     with col_add2:
         if st.button("Add & Rebalance", type="primary", use_container_width=True):
             if new_ticker and new_ticker not in etfs:
-                # Smart rebalancing: Give new ticker 5% (or 0.5% for others), scale down others proportionally
                 new_target = 0.05 if new_ticker == "IBIT" else 0.005
-                
-                # Calculate current total target before adding
                 current_total = sum(d.get("target_pct", 0) for d in etfs.values())
-                
-                # Scale down existing targets
                 if current_total > 0:
                     scale_factor = (1.0 - new_target) / current_total
                     for t in etfs:
                         etfs[t]["target_pct"] *= scale_factor
-                
-                # Add new ticker
                 etfs[new_ticker] = {
                     "shares": 0.0,
                     "cost_basis": 0.0,
@@ -367,7 +368,6 @@ with st.expander("📈 Manage Tickers & Rebalance", expanded=True):
                     "premium_per": 0.0,
                     "sold_date": ""
                 }
-                
                 save_version({
                     "etfs": etfs,
                     "history": history,
@@ -549,7 +549,36 @@ if open_options:
         hide_index=True
     )
 else:
-    st.info("No open option positions yet. Go to 'Update Existing Options / Contracts', enter Number of Contracts > 0, Premium, Sold Date, and Expiry.")
+    st.info("No open option positions yet. Go to 'Update Existing Options / Contracts' to add data.")
+
+# === NEW: MONTHLY PREMIUM BAR CHART ===
+st.subheader("📅 Monthly Premium Income vs $100K Goal")
+
+if history:
+    df_hist = pd.DataFrame(history)
+    df_hist["date"] = pd.to_datetime(df_hist["date"], errors="coerce")
+    df_hist = df_hist.dropna(subset=["date"])
+    df_hist["month"] = df_hist["date"].dt.strftime("%Y-%m")
+    monthly = df_hist.groupby("month")["premium"].sum().reset_index()
+    monthly = monthly.sort_values("month")
+    
+    fig_bar = go.Figure()
+    fig_bar.add_trace(go.Bar(
+        x=monthly["month"], 
+        y=monthly["premium"], 
+        name="Premium Earned",
+        marker_color="#1E90FF"
+    ))
+    fig_bar.add_hline(y=PREMIUM_TARGET_MONTHLY, line_dash="dash", annotation_text="$100K Goal", line_color="red")
+    fig_bar.update_layout(
+        height=400, 
+        xaxis_title="Month",
+        yaxis_title="Premium ($)",
+        title="Monthly Premium Income"
+    )
+    st.plotly_chart(fig_bar, use_container_width=True)
+else:
+    st.info("No premium data yet. Record premiums in Manual Updates to see the chart.")
 
 # === MANUAL UPDATES ===
 with st.expander("📊 Manual Updates"):
@@ -617,4 +646,4 @@ if history:
     fig.update_layout(height=550)
     st.plotly_chart(fig, use_container_width=True)
 
-st.caption("Wealth Growth Pro — Targets now rebalance automatically when adding new tickers")
+st.caption("Wealth Growth Pro — Targeting $100K monthly premium")

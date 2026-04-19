@@ -78,10 +78,20 @@ def load_latest():
     if os.path.exists(LATEST_FILE):
         try:
             with open(LATEST_FILE, "r") as f:
-                return json.load(f)
+                data = json.load(f)
+                # Backward compatibility for older sessions
+                for ticker in data.get("etfs", {}):
+                    etf = data["etfs"][ticker]
+                    etf.setdefault("premium_per", 0.0)
+                    etf.setdefault("sold_date", "")
+                    etf.setdefault("current_strike", 0.0)
+                    etf.setdefault("current_expiry", "")
+                data.setdefault("cash_balance", 0.0)
+                return data
         except:
             pass
     
+    # Default structure
     default_etfs = {}
     for ticker, pct in TARGET_ALLOCATIONS.items():
         default_etfs[ticker] = {
@@ -108,8 +118,20 @@ def load_latest():
 def load_version(filename):
     path = f"{HISTORY_DIR}{filename}"
     if os.path.exists(path):
-        with open(path, "r") as f:
-            return json.load(f)
+        try:
+            with open(path, "r") as f:
+                data = json.load(f)
+                # Backward compatibility
+                for ticker in data.get("etfs", {}):
+                    etf = data["etfs"][ticker]
+                    etf.setdefault("premium_per", 0.0)
+                    etf.setdefault("sold_date", "")
+                    etf.setdefault("current_strike", 0.0)
+                    etf.setdefault("current_expiry", "")
+                data.setdefault("cash_balance", 0.0)
+                return data
+        except:
+            return None
     return None
 
 data = load_latest()
@@ -172,7 +194,7 @@ with st.expander(f"🕒 Session History & Restore ({username})", expanded=False)
         st.info("No saved history yet — will appear after changes")
 
     st.markdown("---")
-    st.markdown("### 💾 Manual Backup & Restore")
+    st.markdown("### 💾 Manual Backup & Restore (use this when recreating app)")
 
     col_dl, col_ul = st.columns(2)
 
@@ -202,24 +224,39 @@ with st.expander(f"🕒 Session History & Restore ({username})", expanded=False)
         if uploaded is not None:
             try:
                 backup_data = json.load(uploaded)
-                required = ["etfs", "history", "initial_capital", "capital_additions", "option_trades"]
-                if all(k in backup_data for k in required):
-                    if st.button("Restore from this file (overwrites current data)", type="primary"):
-                        with open(LATEST_FILE, "w") as f:
-                            json.dump(backup_data, f, indent=2)
-                        st.success("Backup restored! Refreshing page...")
-                        st.rerun()
-                else:
-                    st.error("Invalid backup — missing required sections")
+                # Backward compatibility
+                backup_data.setdefault("cash_balance", 0.0)
+                for ticker in backup_data.get("etfs", {}):
+                    etf = backup_data["etfs"][ticker]
+                    etf.setdefault("premium_per", 0.0)
+                    etf.setdefault("sold_date", "")
+                    etf.setdefault("current_strike", 0.0)
+                    etf.setdefault("current_expiry", "")
+                if st.button("Restore from this file (overwrites current data)", type="primary"):
+                    with open(LATEST_FILE, "w") as f:
+                        json.dump(backup_data, f, indent=2)
+                    st.success("Backup restored! Refreshing page...")
+                    st.rerun()
             except Exception as e:
                 st.error(f"Error reading file: {str(e)}")
 
-# Reset button
+# === IMPROVED RESET BUTTON ===
 if st.button(f"🔴 Reset ALL {username}'s Data", type="secondary"):
-    if st.button("Confirm — this deletes everything permanently"):
+    if st.button("Confirm — this deletes everything permanently", type="primary"):
         if os.path.exists(DATA_DIR):
             shutil.rmtree(DATA_DIR)
-        st.success("All data deleted. Refresh page.")
+        # Clear in-memory variables
+        st.session_state.clear()
+        # Force reload default data
+        data = load_latest()
+        etfs = data.get("etfs", {})
+        history = data.get("history", [])
+        initial_capital = float(data.get("initial_capital", 0.0))
+        capital_additions = data.get("capital_additions", [])
+        option_trades = data.get("option_trades", [])
+        cash_balance = float(data.get("cash_balance", 0.0))
+        margin = 0.0
+        st.success("All data has been completely reset. Refreshing page...")
         st.rerun()
 
 # === INITIAL CAPITAL SETUP ===
@@ -545,36 +582,32 @@ if open_options:
 else:
     st.info("No open option positions yet. Go to 'Update Existing Options / Contracts' to add data.")
 
-# === NEW: PREMIUM REINVESTMENT SUGGESTION ===
+# === PREMIUM REINVESTMENT SUGGESTION ===
 st.subheader("💡 Premium Reinvestment Suggestion")
 
 if history and sum(h.get("premium", 0) for h in history) > 0:
-    # Calculate current allocation %
     total_value = gross_value + cash_balance
     current_alloc = {}
     for t in etfs:
         value = float(etfs[t].get("shares", 0)) * prices.get(t, 0)
         current_alloc[t] = (value / total_value * 100) if total_value > 0 else 0
     
-    # Simple logic for suggestion
     suggestions = []
-    # Prioritize under-allocated high-premium tickers
-    high_premium_tickers = ["SOXL", "TQQQ", "IBIT"]  # High vol = high premium potential
+    high_premium_tickers = ["SOXL", "TQQQ", "IBIT"]
     for ticker in high_premium_tickers:
         if ticker in etfs:
             target = etfs[ticker].get("target_pct", 0) * 100
             actual = current_alloc.get(ticker, 0)
-            if actual < target * 0.9:  # Under-allocated
+            if actual < target * 0.9:
                 suggestions.append(f"**{ticker}** — Strongly recommended. Currently under target ({actual:.1f}% vs {target:.1f}%). High volatility supports strong premium generation.")
     
-    # If no strong under-allocation, suggest diversification or top performer
     if not suggestions:
-        suggestions.append("Portfolio is well-balanced. Consider adding to **SOXL** or **TQQQ** for maximum premium potential due to high volatility, or **IBIT** if Bitcoin sentiment remains bullish.")
+        suggestions.append("Portfolio is well-balanced. Consider adding to **SOXL** or **TQQQ** for maximum premium potential, or **IBIT** if Bitcoin sentiment remains strong.")
     
     for s in suggestions:
         st.write(s)
     
-    st.caption("Suggestion based on: current allocation balance, premium optimization (higher volatility = better premium), and avoiding over-concentration.")
+    st.caption("Suggestion based on current allocation, premium optimization, and diversification.")
 else:
     st.info("Record some premium income to see personalized reinvestment suggestions.")
 
@@ -605,7 +638,7 @@ if history:
     )
     st.plotly_chart(fig_bar, use_container_width=True)
 else:
-    st.info("No premium data recorded yet. Use 'Record Premium' in Manual Updates to see the chart.")
+    st.info("No premium data recorded yet. Use 'Record Premium' in Manual Updates.")
 
 # === MANUAL UPDATES ===
 with st.expander("📊 Manual Updates"):
@@ -673,4 +706,4 @@ if history:
     fig.update_layout(height=550)
     st.plotly_chart(fig, use_container_width=True)
 
-st.caption("Wealth Growth Pro — Premium reinvestment suggestions added below Open Options table")
+st.caption("Wealth Growth Pro — Reset button now fully clears all data | Compatible with old sessions")

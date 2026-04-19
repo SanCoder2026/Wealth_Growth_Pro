@@ -284,18 +284,20 @@ monthly_premium_est = sum(h.get("premium", 0) for h in history[-4:]) if history 
 
 # === DASHBOARD ===
 st.success(f"Welcome back, {username}!")
-col1, col2, col3, col4, col5 = st.columns(5)
+col1, col2, col3, col4, col5, col6 = st.columns(6)
 col1.metric("Gross Portfolio", f"${gross_value:,.2f}")
 col2.metric("Current Margin", f"${margin:,.2f}")
 col3.metric("Net Equity", f"${net_equity:,.2f}", delta=f"${profit:,.2f}")
 col4.metric("Total Capital Added", f"${total_capital_added:,.2f}")
 col5.metric("Progress to $1M", f"{pct_to_m:.2f}%")
+col6.metric("Profit / Loss", f"${profit:,.2f}", delta=f"${profit:,.2f}", 
+            delta_color="normal" if profit >= 0 else "inverse")
 
 st.caption(f"**Cash**: ${cash_balance:,.2f} | Monthly Premium Estimate: ${monthly_premium_est:,.2f} (Target: ${PREMIUM_TARGET_MONTHLY:,.0f})")
 
-# === CAPITAL & MARGIN ===
+# === CAPITAL & MARGIN (with Cash Update) ===
 with st.expander("💰 Capital & Margin"):
-    col1, col2 = st.columns(2)
+    col1, col2, col3 = st.columns(3)
     with col1:
         st.subheader("Add Capital")
         add_amount = st.number_input("Amount ($)", min_value=0.0, step=1000.0, key="add_cap")
@@ -319,6 +321,16 @@ with st.expander("💰 Capital & Margin"):
             save_version({"etfs": etfs, "history": history, "initial_capital": initial_capital,
                           "capital_additions": capital_additions, "option_trades": option_trades, "cash_balance": cash_balance})
             st.success("Margin updated")
+            st.rerun()
+
+    with col3:
+        st.subheader("💵 Cash Balance")
+        cash_input = st.number_input("Current Cash ($)", min_value=0.0, value=float(cash_balance), step=100.0, format="%.2f")
+        if st.button("Update Cash"):
+            cash_balance = float(cash_input)
+            save_version({"etfs": etfs, "history": history, "initial_capital": initial_capital,
+                          "capital_additions": capital_additions, "option_trades": option_trades, "cash_balance": cash_balance})
+            st.success(f"Cash updated to ${cash_balance:,.2f}")
             st.rerun()
 
 # === MANAGE TICKERS & ADD NEW ===
@@ -575,4 +587,4 @@ if history:
     fig.update_layout(height=550)
     st.plotly_chart(fig, use_container_width=True)
 
-st.caption("Wealth Growth Pro — Open Options table sourced only from Update Contracts section")
+st.caption("Wealth Growth Pro — Cash updated in Capital section | Profit/Loss added to dashboard")

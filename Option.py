@@ -104,7 +104,7 @@ def load_latest():
         "initial_capital": 0.0,
         "capital_additions": [],
         "option_trades": [],
-        "cash_balance": 0.0          # Added for cash tracking
+        "cash_balance": 0.0
     }
 
 def load_version(filename):
@@ -120,7 +120,7 @@ history = data.get("history", [])
 initial_capital = float(data.get("initial_capital", 0.0))
 capital_additions = data.get("capital_additions", [])
 option_trades = data.get("option_trades", [])
-cash_balance = float(data.get("cash_balance", 0.0))   # Added
+cash_balance = float(data.get("cash_balance", 0.0))
 
 margin = 0.0
 if history:
@@ -187,7 +187,7 @@ with st.expander(f"🕒 Session History & Restore ({username})", expanded=False)
                 "initial_capital": initial_capital,
                 "capital_additions": capital_additions,
                 "option_trades": option_trades,
-                "cash_balance": cash_balance,          # Added
+                "cash_balance": cash_balance,
                 "timestamp": datetime.now().isoformat(),
                 "username": username
             }
@@ -277,7 +277,7 @@ prices = fetch_prices(list(etfs.keys()))
 # === PORTFOLIO CALCULATIONS ===
 gross_value = sum(float(etfs[t].get("shares", 0)) * prices.get(t, 0) for t in etfs)
 total_capital_added = initial_capital + sum(a.get("amount", 0) for a in capital_additions)
-net_equity = gross_value - margin + cash_balance          # Updated with cash
+net_equity = gross_value - margin + cash_balance
 profit = net_equity - total_capital_added
 pct_to_m = max(0, (net_equity / 1000000) * 100) if net_equity > 0 else 0
 monthly_premium_est = sum(h.get("premium", 0) for h in history[-4:]) if history else 0
@@ -302,7 +302,7 @@ with st.expander("💰 Capital & Margin"):
         add_date = st.date_input("Date", value=datetime.now().date(), key="add_date_cap")
         if st.button("Add Capital") and add_amount > 0:
             capital_additions.append({"date": add_date.strftime("%Y-%m-%d"), "amount": float(add_amount)})
-            cash_balance += float(add_amount)                    # Added
+            cash_balance += float(add_amount)
             today = datetime.now().strftime("%Y-%m-%d")
             history.append({"date": today, "portfolio_value": gross_value, "margin_debt": float(margin), "premium": 0})
             save_version({"etfs": etfs, "history": history, "initial_capital": initial_capital,
@@ -399,110 +399,6 @@ with st.expander("📊 Update Existing Options / Contracts", expanded=False):
             st.success(f"Contracts & position info updated for **{ct_tk}**")
             st.rerun()
 
-# === SUGGESTION FOR THE DAY ===
-with st.expander("📅 Suggestion for the Day", expanded=False):
-    st.subheader("Daily Option Management Suggestions")
-    suggestions = []
-    today = datetime.now().date()
-    
-    for trade in option_trades:
-        if trade.get("status") != "open":
-            continue
-        expiry = datetime.strptime(trade["expiry"], "%Y-%m-%d").date()
-        days_left = (expiry - today).days
-        current_price = prices.get(trade["ticker"], 0)
-        itm_otm = "ITM" if current_price > trade["strike"] else "OTM" if current_price < trade["strike"] else "ATM"
-        
-        status = f"{trade['ticker']} {trade['type']} @{trade['strike']} exp {trade['expiry']} ({days_left} days left) – {itm_otm}"
-        
-        if days_left <= 3:
-            suggestions.append(f"**URGENT – Roll or close soon**: {status}")
-        elif days_left <= 7:
-            suggestions.append(f"**Consider rolling**: {status}")
-        else:
-            suggestions.append(f"**Monitor**: {status}")
-    
-    if suggestions:
-        for s in suggestions:
-            st.write(s)
-    else:
-        st.info("No open option positions to suggest on today.")
-
-# === OPTIONS / WHEEL SECTION ===
-with st.expander("🛞 Options Trading & Weekly Wheel (Paper)"):
-    st.subheader("Sell Weekly Call")
-    ticker = st.selectbox("Ticker", list(etfs.keys()), key="opt_tkr")
-    if ticker and prices.get(ticker, 0) > 0:
-        current_price = prices[ticker]
-        today = datetime.now().date()
-        days_ahead = (4 - today.weekday()) % 7 or 7
-        expiry = today + timedelta(days=days_ahead)
-        expiry_str = expiry.strftime("%Y-%m-%d")
-
-        otm_pct = 0.12 if "SOXL" in ticker else 0.09 if "TQQQ" in ticker else 0.07
-        strike = round(current_price * (1 + otm_pct), 2)
-
-        st.write(f"Price: **${current_price:.2f}**   |   Next Friday: **{expiry_str}**")
-        st.write(f"Suggested OTM Call Strike: **${strike}**")
-
-        contracts = st.number_input(
-            "Contracts to Sell",
-            min_value=0,
-            step=1,
-            value=int(etfs[ticker].get("weekly_contracts", 0)),
-            help="0 = no contracts this week"
-        )
-        premium_per = st.number_input("Premium per contract ($)", min_value=0.0, step=0.05)
-
-        if st.button("Sell Calls"):
-            if contracts <= 0:
-                st.warning("Select at least 1 contract to sell (or skip this week).")
-            elif premium_per <= 0:
-                st.warning("Enter a positive premium amount.")
-            else:
-                total_prem = contracts * premium_per * 100
-                etfs[ticker]["weekly_contracts"] = int(contracts)
-                today_str = datetime.now().strftime("%Y-%m-%d")
-                history.append({"date": today_str, "premium": float(total_prem), "note": f"Sold {contracts} {ticker} calls"})
-                
-                option_trades.append({
-                    "ticker": ticker,
-                    "type": "call",
-                    "strike": strike,
-                    "expiry": expiry_str,
-                    "contracts": int(contracts),
-                    "premium": float(premium_per),
-                    "status": "open"
-                })
-                
-                save_version({
-                    "etfs": etfs,
-                    "history": history,
-                    "initial_capital": initial_capital,
-                    "capital_additions": capital_additions,
-                    "option_trades": option_trades,
-                    "cash_balance": cash_balance
-                })
-                st.success(f"Recorded ${total_prem:,.2f} premium")
-                st.rerun()
-
-    st.subheader("Monday Wheel Check")
-    if st.button("Run Assignment Check"):
-        open_trades = [t for t in option_trades if t.get("status") == "open"]
-        if not open_trades:
-            st.info("No open trades")
-        for trade in open_trades:
-            st.write(f"{trade['ticker']} {trade['type']} @{trade['strike']} exp {trade['expiry']} — {trade['contracts']} ct")
-            key = f"assign_{trade['ticker']}_{trade.get('expiry','')}"
-            if st.checkbox("Was assigned?", key=key):
-                trade["status"] = "assigned"
-                st.write("→ Next: consider selling put / call depending on direction")
-        if st.button("Save Assignment Updates"):
-            save_version({"etfs": etfs, "history": history, "initial_capital": initial_capital,
-                          "capital_additions": capital_additions, "option_trades": option_trades, "cash_balance": cash_balance})
-            st.success("Assignments updated")
-            st.rerun()
-
 # === CURRENT HOLDINGS TABLE ===
 st.subheader("Current Holdings")
 
@@ -558,10 +454,25 @@ st.dataframe(
     hide_index=True
 )
 
-# === NEW: DETAILED OPEN OPTIONS TABLE ===
+# === DETAILED OPEN OPTIONS POSITIONS TABLE ===
 st.subheader("🛡️ Open Options Positions")
 
-open_options = [trade for trade in option_trades if trade.get("status") == "open"]
+open_options = []
+
+# Build options list only from Update Existing Options / Contracts section
+for ticker, info in etfs.items():
+    contracts = int(info.get("contracts_sold", 0))
+    expiry = info.get("current_expiry")
+    strike = float(info.get("current_strike", 0))
+    if contracts > 0 and expiry:
+        open_options.append({
+            "ticker": ticker,
+            "type": "call",
+            "strike": strike,
+            "expiry": expiry,
+            "contracts": contracts,
+            "status": "open"
+        })
 
 if open_options:
     opt_rows = []
@@ -596,7 +507,7 @@ if open_options:
         hide_index=True
     )
 else:
-    st.info("No open option positions yet. Sell weekly calls in the Options section to see them here.")
+    st.info("No open option positions yet. Go to 'Update Existing Options / Contracts', select a ticker, enter Contracts > 0 and an Expiry Date, then click Update.")
 
 # === MANUAL UPDATES ===
 with st.expander("📊 Manual Updates"):
@@ -664,4 +575,4 @@ if history:
     fig.update_layout(height=550)
     st.plotly_chart(fig, use_container_width=True)
 
-st.caption("Wealth Growth Pro — with detailed Open Options table and cash balance")
+st.caption("Wealth Growth Pro — Open Options table sourced only from Update Contracts section")

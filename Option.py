@@ -12,7 +12,6 @@ import shutil
 st.set_page_config(page_title="Wealth Growth Pro → $1M", layout="wide", initial_sidebar_state="expanded")
 PREMIUM_TARGET_MONTHLY = 100000.0
 
-# Attractive centered title
 st.markdown(
     """
     <h1 style='text-align: center; color: #1E90FF; font-family: "Arial Black", Gadget, sans-serif; 
@@ -172,12 +171,10 @@ with st.expander(f"🕒 Session History & Restore ({username})", expanded=False)
     else:
         st.info("No saved history yet — will appear after changes")
 
-    # === BACKUP DOWNLOAD & UPLOAD ===
     st.markdown("---")
-    st.markdown("### 💾 Manual Backup & Restore (use this when recreating app)")
+    st.markdown("### 💾 Manual Backup & Restore")
 
     col_dl, col_ul = st.columns(2)
-
     with col_dl:
         if st.button("⬇️ Download Full Backup Now"):
             backup = {
@@ -281,7 +278,7 @@ profit = net_equity - total_capital_added
 pct_to_m = max(0, (net_equity / 1000000) * 100) if net_equity > 0 else 0
 monthly_premium_est = sum(h.get("premium", 0) for h in history[-4:]) if history else 0
 
-# Monthly Average Premium
+# Monthly Average Premium (for dashboard)
 current_year = datetime.now().year
 year_history = [h for h in history if pd.to_datetime(h.get("date", "")).year == current_year]
 monthly_premiums = {}
@@ -439,7 +436,7 @@ with st.expander("📊 Update Existing Options / Contracts", expanded=False):
             st.success(f"Options updated for **{ct_tk}**")
             st.rerun()
 
-# === CURRENT HOLDINGS TABLE (Updated as requested) ===
+# === CURRENT HOLDINGS TABLE ===
 st.subheader("Current Holdings")
 
 rows = []
@@ -552,6 +549,35 @@ if open_options:
 else:
     st.info("No open option positions yet. Go to 'Update Existing Options / Contracts' to add data.")
 
+# === MONTHLY PREMIUM BAR CHART ===
+st.subheader("📅 Monthly Premium Income vs $100K Goal")
+
+if history:
+    df_hist = pd.DataFrame(history)
+    df_hist["date"] = pd.to_datetime(df_hist["date"], errors="coerce")
+    df_hist = df_hist.dropna(subset=["date"])
+    df_hist["month"] = df_hist["date"].dt.strftime("%Y-%m")
+    monthly = df_hist.groupby("month")["premium"].sum().reset_index()
+    monthly = monthly.sort_values("month")
+    
+    fig_bar = go.Figure()
+    fig_bar.add_trace(go.Bar(
+        x=monthly["month"], 
+        y=monthly["premium"], 
+        name="Premium Earned",
+        marker_color="#1E90FF"
+    ))
+    fig_bar.add_hline(y=PREMIUM_TARGET_MONTHLY, line_dash="dash", annotation_text="$100K Goal", line_color="red")
+    fig_bar.update_layout(
+        height=400, 
+        xaxis_title="Month",
+        yaxis_title="Premium ($)",
+        title="Monthly Premium Income"
+    )
+    st.plotly_chart(fig_bar, use_container_width=True)
+else:
+    st.info("No premium data recorded yet. Use 'Record Premium' in Manual Updates to see the chart.")
+
 # === MANUAL UPDATES ===
 with st.expander("📊 Manual Updates"):
     col_l, col_r = st.columns(2)
@@ -618,4 +644,4 @@ if history:
     fig.update_layout(height=550)
     st.plotly_chart(fig, use_container_width=True)
 
-st.caption("Wealth Growth Pro — Current Price added | Profit $ column removed")
+st.caption("Wealth Growth Pro — Monthly Premium Bar Chart Added")

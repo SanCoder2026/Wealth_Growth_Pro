@@ -175,6 +175,7 @@ with st.expander(f"🕒 Session History & Restore ({username})", expanded=False)
     st.markdown("### 💾 Manual Backup & Restore")
 
     col_dl, col_ul = st.columns(2)
+
     with col_dl:
         if st.button("⬇️ Download Full Backup Now"):
             backup = {
@@ -278,7 +279,7 @@ profit = net_equity - total_capital_added
 pct_to_m = max(0, (net_equity / 1000000) * 100) if net_equity > 0 else 0
 monthly_premium_est = sum(h.get("premium", 0) for h in history[-4:]) if history else 0
 
-# Monthly Average Premium (for dashboard)
+# Monthly Average Premium
 current_year = datetime.now().year
 year_history = [h for h in history if pd.to_datetime(h.get("date", "")).year == current_year]
 monthly_premiums = {}
@@ -456,19 +457,14 @@ for t in sorted(etfs.keys()):
     
     if "SOXL" in t or "TQQQ" in t:
         otm_pct = 0.14
-        delta_est = "~30Δ"
     elif "URA" in t:
         otm_pct = 0.12
-        delta_est = "~28–32Δ"
     elif "SLV" in t or "COPX" in t:
         otm_pct = 0.085
-        delta_est = "~30Δ"
     elif "IAU" in t or "UPRO" in t:
         otm_pct = 0.065
-        delta_est = "~30–35Δ"
     else:
         otm_pct = 0.10
-        delta_est = "~30Δ"
     
     suggested_strike = round(current_price * (1 + otm_pct), 2) if current_price > 0 else "-"
     
@@ -548,6 +544,39 @@ if open_options:
     )
 else:
     st.info("No open option positions yet. Go to 'Update Existing Options / Contracts' to add data.")
+
+# === NEW: PREMIUM REINVESTMENT SUGGESTION ===
+st.subheader("💡 Premium Reinvestment Suggestion")
+
+if history and sum(h.get("premium", 0) for h in history) > 0:
+    # Calculate current allocation %
+    total_value = gross_value + cash_balance
+    current_alloc = {}
+    for t in etfs:
+        value = float(etfs[t].get("shares", 0)) * prices.get(t, 0)
+        current_alloc[t] = (value / total_value * 100) if total_value > 0 else 0
+    
+    # Simple logic for suggestion
+    suggestions = []
+    # Prioritize under-allocated high-premium tickers
+    high_premium_tickers = ["SOXL", "TQQQ", "IBIT"]  # High vol = high premium potential
+    for ticker in high_premium_tickers:
+        if ticker in etfs:
+            target = etfs[ticker].get("target_pct", 0) * 100
+            actual = current_alloc.get(ticker, 0)
+            if actual < target * 0.9:  # Under-allocated
+                suggestions.append(f"**{ticker}** — Strongly recommended. Currently under target ({actual:.1f}% vs {target:.1f}%). High volatility supports strong premium generation.")
+    
+    # If no strong under-allocation, suggest diversification or top performer
+    if not suggestions:
+        suggestions.append("Portfolio is well-balanced. Consider adding to **SOXL** or **TQQQ** for maximum premium potential due to high volatility, or **IBIT** if Bitcoin sentiment remains bullish.")
+    
+    for s in suggestions:
+        st.write(s)
+    
+    st.caption("Suggestion based on: current allocation balance, premium optimization (higher volatility = better premium), and avoiding over-concentration.")
+else:
+    st.info("Record some premium income to see personalized reinvestment suggestions.")
 
 # === MONTHLY PREMIUM BAR CHART ===
 st.subheader("📅 Monthly Premium Income vs $100K Goal")
@@ -644,4 +673,4 @@ if history:
     fig.update_layout(height=550)
     st.plotly_chart(fig, use_container_width=True)
 
-st.caption("Wealth Growth Pro — Monthly Premium Bar Chart Added")
+st.caption("Wealth Growth Pro — Premium reinvestment suggestions added below Open Options table")

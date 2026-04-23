@@ -78,10 +78,20 @@ def load_latest():
     if os.path.exists(LATEST_FILE):
         try:
             with open(LATEST_FILE, "r") as f:
-                return json.load(f)
+                data = json.load(f)
+                # Backward compatibility for older sessions
+                for ticker in data.get("etfs", {}):
+                    etf = data["etfs"][ticker]
+                    etf.setdefault("premium_per", 0.0)
+                    etf.setdefault("sold_date", "")
+                    etf.setdefault("current_strike", 0.0)
+                    etf.setdefault("current_expiry", "")
+                data.setdefault("cash_balance", 0.0)
+                return data
         except:
             pass
     
+    # Default structure
     default_etfs = {}
     for ticker, pct in TARGET_ALLOCATIONS.items():
         default_etfs[ticker] = {
@@ -108,8 +118,20 @@ def load_latest():
 def load_version(filename):
     path = f"{HISTORY_DIR}{filename}"
     if os.path.exists(path):
-        with open(path, "r") as f:
-            return json.load(f)
+        try:
+            with open(path, "r") as f:
+                data = json.load(f)
+                # Backward compatibility
+                for ticker in data.get("etfs", {}):
+                    etf = data["etfs"][ticker]
+                    etf.setdefault("premium_per", 0.0)
+                    etf.setdefault("sold_date", "")
+                    etf.setdefault("current_strike", 0.0)
+                    etf.setdefault("current_expiry", "")
+                data.setdefault("cash_balance", 0.0)
+                return data
+        except:
+            return None
     return None
 
 data = load_latest()
@@ -202,24 +224,39 @@ with st.expander(f"🕒 Session History & Restore ({username})", expanded=False)
         if uploaded is not None:
             try:
                 backup_data = json.load(uploaded)
-                required = ["etfs", "history", "initial_capital", "capital_additions", "option_trades"]
-                if all(k in backup_data for k in required):
-                    if st.button("Restore from this file (overwrites current data)", type="primary"):
-                        with open(LATEST_FILE, "w") as f:
-                            json.dump(backup_data, f, indent=2)
-                        st.success("Backup restored! Refreshing page...")
-                        st.rerun()
-                else:
-                    st.error("Invalid backup — missing required sections")
+                # Backward compatibility
+                backup_data.setdefault("cash_balance", 0.0)
+                for ticker in backup_data.get("etfs", {}):
+                    etf = backup_data["etfs"][ticker]
+                    etf.setdefault("premium_per", 0.0)
+                    etf.setdefault("sold_date", "")
+                    etf.setdefault("current_strike", 0.0)
+                    etf.setdefault("current_expiry", "")
+                if st.button("Restore from this file (overwrites current data)", type="primary"):
+                    with open(LATEST_FILE, "w") as f:
+                        json.dump(backup_data, f, indent=2)
+                    st.success("Backup restored! Refreshing page...")
+                    st.rerun()
             except Exception as e:
                 st.error(f"Error reading file: {str(e)}")
 
-# Reset button
+# === IMPROVED RESET BUTTON ===
 if st.button(f"🔴 Reset ALL {username}'s Data", type="secondary"):
-    if st.button("Confirm — this deletes everything permanently"):
+    if st.button("Confirm — this deletes everything permanently", type="primary"):
         if os.path.exists(DATA_DIR):
             shutil.rmtree(DATA_DIR)
-        st.success("All data deleted. Refresh page.")
+        # Clear in-memory variables
+        st.session_state.clear()
+        # Force reload default data
+        data = load_latest()
+        etfs = data.get("etfs", {})
+        history = data.get("history", [])
+        initial_capital = float(data.get("initial_capital", 0.0))
+        capital_additions = data.get("capital_additions", [])
+        option_trades = data.get("option_trades", [])
+        cash_balance = float(data.get("cash_balance", 0.0))
+        margin = 0.0
+        st.success("All data has been completely reset. Refreshing page...")
         st.rerun()
 
 # === INITIAL CAPITAL SETUP ===
@@ -279,20 +316,32 @@ profit = net_equity - total_capital_added
 pct_to_m = max(0, (net_equity / 1000000) * 100) if net_equity > 0 else 0
 monthly_premium_est = sum(h.get("premium", 0) for h in history[-4:]) if history else 0
 
+# Monthly Average Premium
+current_year = datetime.now().year
+year_history = [h for h in history if pd.to_datetime(h.get("date", "")).year == current_year]
+monthly_premiums = {}
+for h in year_history:
+    month = pd.to_datetime(h.get("date", "")).strftime("%Y-%m")
+    monthly_premiums[month] = monthly_premiums.get(month, 0) + float(h.get("premium", 0))
+avg_monthly_premium = sum(monthly_premiums.values()) / len(monthly_premiums) if monthly_premiums else 0
+
 # === DASHBOARD ===
 st.success(f"Welcome back, {username}!")
-col1, col2, col3, col4, col5 = st.columns(5)
+col1, col2, col3, col4, col5, col6, col7 = st.columns(7)
 col1.metric("Gross Portfolio", f"${gross_value:,.2f}")
 col2.metric("Current Margin", f"${margin:,.2f}")
 col3.metric("Net Equity", f"${net_equity:,.2f}", delta=f"${profit:,.2f}")
 col4.metric("Total Capital Added", f"${total_capital_added:,.2f}")
 col5.metric("Progress to $1M", f"{pct_to_m:.2f}%")
+col6.metric("Profit / Loss", f"${profit:,.2f}", delta=f"${profit:,.2f}", delta_color="normal" if profit >= 0 else "inverse")
+col7.metric("Avg Monthly Premium", f"${avg_monthly_premium:,.0f}", 
+            delta=f"{(avg_monthly_premium / PREMIUM_TARGET_MONTHLY * 100):.1f}% of goal")
 
-st.caption(f"**Cash**: ${cash_balance:,.2f} | Monthly Premium Estimate: ${monthly_premium_est:,.2f} (Target: ${PREMIUM_TARGET_MONTHLY:,.0f})")
+st.caption(f"**Cash**: ${cash_balance:,.2f} | Recent Premium Est: ${monthly_premium_est:,.0f}")
 
 # === CAPITAL & MARGIN ===
 with st.expander("💰 Capital & Margin"):
-    col1, col2 = st.columns(2)
+    col1, col2, col3 = st.columns(3)
     with col1:
         st.subheader("Add Capital")
         add_amount = st.number_input("Amount ($)", min_value=0.0, step=1000.0, key="add_cap")
@@ -318,6 +367,16 @@ with st.expander("💰 Capital & Margin"):
             st.success("Margin updated")
             st.rerun()
 
+    with col3:
+        st.subheader("💵 Cash Balance")
+        cash_input = st.number_input("Current Cash ($)", min_value=0.0, value=float(cash_balance), step=100.0, format="%.2f")
+        if st.button("Update Cash"):
+            cash_balance = float(cash_input)
+            save_version({"etfs": etfs, "history": history, "initial_capital": initial_capital,
+                          "capital_additions": capital_additions, "option_trades": option_trades, "cash_balance": cash_balance})
+            st.success(f"Cash updated to ${cash_balance:,.2f}")
+            st.rerun()
+
 # === MANAGE TICKERS & ADD NEW ===
 with st.expander("📈 Manage Tickers & Rebalance", expanded=True):
     st.subheader("Add New Ticker")
@@ -327,13 +386,22 @@ with st.expander("📈 Manage Tickers & Rebalance", expanded=True):
     with col_add2:
         if st.button("Add & Rebalance", type="primary", use_container_width=True):
             if new_ticker and new_ticker not in etfs:
-                default_pct = 0.005
+                new_target = 0.05 if new_ticker == "IBIT" else 0.005
+                current_total = sum(d.get("target_pct", 0) for d in etfs.values())
+                if current_total > 0:
+                    scale_factor = (1.0 - new_target) / current_total
+                    for t in etfs:
+                        etfs[t]["target_pct"] *= scale_factor
                 etfs[new_ticker] = {
                     "shares": 0.0,
                     "cost_basis": 0.0,
-                    "target_pct": TARGET_ALLOCATIONS.get(new_ticker, default_pct),
+                    "target_pct": new_target,
                     "contracts_sold": 0,
-                    "weekly_contracts": 0
+                    "weekly_contracts": 0,
+                    "premium_per": 0.0,
+                    "sold_date": "",
+                    "current_strike": 0.0,
+                    "current_expiry": ""
                 }
                 save_version({
                     "etfs": etfs,
@@ -343,67 +411,68 @@ with st.expander("📈 Manage Tickers & Rebalance", expanded=True):
                     "option_trades": option_trades,
                     "cash_balance": cash_balance
                 })
-                st.success(f"Added **{new_ticker}**")
+                st.success(f"Added **{new_ticker}** — targets rebalanced to 100%")
                 st.rerun()
             else:
                 st.warning("Ticker already exists or input invalid")
 
-# === MANAGE OPEN OPTIONS (Multiple per ticker) ===
-with st.expander("📊 Manage Open Options", expanded=True):
-    st.subheader("Add New Option Position")
-    col1, col2 = st.columns(2)
-    with col1:
-        opt_ticker = st.selectbox("Ticker", list(etfs.keys()), key="opt_ticker_new")
-        opt_type = st.selectbox("Type", ["call", "put"], key="opt_type_new")
-    with col2:
-        opt_strike = st.number_input("Strike Price", min_value=0.0, step=0.01, key="opt_strike_new")
-        opt_contracts = st.number_input("Number of Contracts", min_value=1, step=1, key="opt_contracts_new")
-    col3, col4 = st.columns(2)
-    with col3:
-        opt_premium = st.number_input("Premium per contract ($)", min_value=0.0, step=0.05, key="opt_premium_new")
-        opt_expiry = st.date_input("Expiry Date", value=datetime.now().date() + timedelta(days=7), key="opt_expiry_new")
-    with col4:
-        opt_sold_date = st.date_input("Sold Date", value=datetime.now().date(), key="opt_sold_date_new")
-
-    if st.button("Add New Option"):
-        option_trades.append({
-            "ticker": opt_ticker,
-            "type": opt_type,
-            "strike": float(opt_strike),
-            "expiry": opt_expiry.strftime("%Y-%m-%d"),
-            "contracts": int(opt_contracts),
-            "premium_per": float(opt_premium),
-            "sold_date": opt_sold_date.strftime("%Y-%m-%d"),
-            "status": "open"
-        })
-        save_version({"etfs": etfs, "history": history, "initial_capital": initial_capital,
-                      "capital_additions": capital_additions, "option_trades": option_trades, "cash_balance": cash_balance})
-        st.success(f"Added new {opt_type} on {opt_ticker}")
-        st.rerun()
-
-    st.subheader("Current Open Options")
-    for idx, opt in enumerate(option_trades):
-        if opt.get("status") != "open":
-            continue
-        with st.expander(f"{opt['ticker']} {opt['type'].upper()} @ ${opt['strike']:.2f} exp {opt['expiry']} — {opt['contracts']} ct"):
-            col_a, col_b = st.columns(2)
-            with col_a:
-                new_contracts = st.number_input("Contracts", value=opt["contracts"], key=f"edit_c_{idx}")
-                new_premium = st.number_input("Premium per contract", value=opt["premium_per"], key=f"edit_p_{idx}")
-            with col_b:
-                if st.button("Save Changes", key=f"save_{idx}"):
-                    option_trades[idx]["contracts"] = new_contracts
-                    option_trades[idx]["premium_per"] = new_premium
-                    save_version({"etfs": etfs, "history": history, "initial_capital": initial_capital,
-                                  "capital_additions": capital_additions, "option_trades": option_trades, "cash_balance": cash_balance})
-                    st.success("Option updated")
-                    st.rerun()
-            if st.button("Close Position", key=f"close_{idx}"):
-                option_trades[idx]["status"] = "closed"
-                save_version({"etfs": etfs, "history": history, "initial_capital": initial_capital,
-                              "capital_additions": capital_additions, "option_trades": option_trades, "cash_balance": cash_balance})
-                st.success("Position closed")
-                st.rerun()
+# === UPDATE EXISTING OPTIONS / CONTRACTS ===
+with st.expander("📊 Update Existing Options / Contracts", expanded=False):
+    st.subheader("Update Contracts for Ticker")
+    ct_tk = st.selectbox("Select Ticker", list(etfs.keys()), key="ct_update_tk")
+    if ct_tk:
+        col1, col2 = st.columns(2)
+        with col1:
+            contracts = st.number_input(
+                "Number of Contracts Sold",
+                min_value=0,
+                step=1,
+                value=int(etfs[ct_tk].get("contracts_sold", 0)),
+                key="contracts_upd"
+            )
+        with col2:
+            premium_per = st.number_input(
+                "Premium Value ($ per contract)",
+                min_value=0.0,
+                step=0.05,
+                value=float(etfs[ct_tk].get("premium_per", 0.0)),
+                key="premium_upd"
+            )
+        
+        col3, col4 = st.columns(2)
+        with col3:
+            strike = st.number_input(
+                "Strike Price",
+                min_value=0.0,
+                step=0.01,
+                value=float(etfs[ct_tk].get("current_strike", 0.0)),
+                format="%.2f",
+                key="strike_upd"
+            )
+        with col4:
+            sold_date = st.date_input(
+                "Sold Date",
+                value=datetime.now().date(),
+                key="sold_date_upd"
+            )
+        
+        expiry_date = st.date_input(
+            "Expiry Date",
+            value=datetime.now().date() + timedelta(days=7),
+            key="expiry_upd"
+        )
+        
+        if st.button("Update Contracts & Position Info"):
+            etfs[ct_tk]["contracts_sold"] = contracts
+            etfs[ct_tk]["premium_per"] = float(premium_per)
+            etfs[ct_tk]["current_strike"] = float(strike)
+            etfs[ct_tk]["current_expiry"] = expiry_date.strftime("%Y-%m-%d")
+            etfs[ct_tk]["sold_date"] = sold_date.strftime("%Y-%m-%d")
+            
+            save_version({"etfs": etfs, "history": history, "initial_capital": initial_capital,
+                          "capital_additions": capital_additions, "option_trades": option_trades, "cash_balance": cash_balance})
+            st.success(f"Options updated for **{ct_tk}**")
+            st.rerun()
 
 # === CURRENT HOLDINGS TABLE ===
 st.subheader("Current Holdings")
@@ -425,33 +494,29 @@ for t in sorted(etfs.keys()):
     
     if "SOXL" in t or "TQQQ" in t:
         otm_pct = 0.14
-        delta_est = "~30Δ"
     elif "URA" in t:
         otm_pct = 0.12
-        delta_est = "~28–32Δ"
     elif "SLV" in t or "COPX" in t:
         otm_pct = 0.085
-        delta_est = "~30Δ"
     elif "IAU" in t or "UPRO" in t:
         otm_pct = 0.065
-        delta_est = "~30–35Δ"
     else:
         otm_pct = 0.10
-        delta_est = "~30Δ"
     
     suggested_strike = round(current_price * (1 + otm_pct), 2) if current_price > 0 else "-"
     
     rows.append({
         "Ticker": t,
         "Shares": f"{shares:.4f}",
-        "Purchase price": f"${cost_basis:.2f}" if cost_basis > 0 else "-",
+        "Purchase Price": f"${cost_basis:.2f}" if cost_basis > 0 else "-",
+        "Current Price": f"${current_price:.2f}" if current_price > 0 else "-",
         "Current Value": f"${current_value:,.2f}",
         "Current %": f"{(current_value / total_val * 100):.2f}%",
         "Target %": f"{d.get('target_pct', 0)*100:.1f}%",
-        "Profit $": f"${profit_dollar:,.2f}" if purchase_value > 0 else "-",
         "Profit %": f"{profit_pct:+.2f}%" if purchase_value > 0 else "-",
-        "Suggested Strike (~30Δ)": f"${suggested_strike}",
-        "Delta Est.": delta_est
+        "Suggested Strike": f"${suggested_strike}",
+        "Suggested Expiry": (datetime.now() + timedelta(days=45)).strftime("%Y-%m-%d"),
+        "Suggested Action": "Sell New Call" if d.get("contracts_sold", 0) == 0 else "Roll Call"
     })
 
 st.dataframe(
@@ -463,17 +528,34 @@ st.dataframe(
 # === OPEN OPTIONS POSITIONS TABLE ===
 st.subheader("🛡️ Open Options Positions")
 
-if option_trades:
+open_options = []
+
+for ticker, info in etfs.items():
+    contracts = int(info.get("contracts_sold", 0))
+    expiry = info.get("current_expiry")
+    strike = float(info.get("current_strike", 0))
+    premium_per = float(info.get("premium_per", 0.0))
+    if contracts > 0 and expiry:
+        open_options.append({
+            "ticker": ticker,
+            "strike": strike,
+            "expiry": expiry,
+            "contracts": contracts,
+            "premium_per": premium_per,
+            "sold_date": info.get("sold_date", "")
+        })
+
+if open_options:
     opt_rows = []
     today = datetime.now().date()
-    for trade in option_trades:
-        if trade.get("status") != "open":
-            continue
+    
+    for trade in open_options:
         try:
             expiry_dt = datetime.strptime(trade["expiry"], "%Y-%m-%d").date()
             days_left = max(0, (expiry_dt - today).days)
         except:
             days_left = 0
+            
         current_price = prices.get(trade.get("ticker", ""), 0)
         itm_otm = "ITM" if current_price > trade.get("strike", 0) else "OTM" if current_price < trade.get("strike", 0) else "ATM"
         
@@ -482,19 +564,81 @@ if option_trades:
         
         opt_rows.append({
             "Ticker": trade.get("ticker", ""),
-            "Type": trade.get("type", "").upper(),
+            "Contracts": trade.get("contracts", 0),
             "Strike": f"${trade.get('strike', 0):.2f}",
             "Expiry": trade.get("expiry", ""),
             "DTE": days_left,
             "Moneyness": itm_otm,
-            "Contracts": trade.get("contracts", 0),
+            "Sold Date": trade.get("sold_date", ""),
             "Premium per Contract": f"${trade.get('premium_per', 0):.2f}",
             "Suggested Roll Strike": f"${suggested_roll}"
         })
     
-    st.dataframe(pd.DataFrame(opt_rows), use_container_width=True, hide_index=True)
+    st.dataframe(
+        pd.DataFrame(opt_rows),
+        use_container_width=True,
+        hide_index=True
+    )
 else:
-    st.info("No open option positions yet. Add them in 'Manage Open Options' above.")
+    st.info("No open option positions yet. Go to 'Update Existing Options / Contracts' to add data.")
+
+# === PREMIUM REINVESTMENT SUGGESTION ===
+st.subheader("💡 Premium Reinvestment Suggestion")
+
+if history and sum(h.get("premium", 0) for h in history) > 0:
+    total_value = gross_value + cash_balance
+    current_alloc = {}
+    for t in etfs:
+        value = float(etfs[t].get("shares", 0)) * prices.get(t, 0)
+        current_alloc[t] = (value / total_value * 100) if total_value > 0 else 0
+    
+    suggestions = []
+    high_premium_tickers = ["SOXL", "TQQQ", "IBIT"]
+    for ticker in high_premium_tickers:
+        if ticker in etfs:
+            target = etfs[ticker].get("target_pct", 0) * 100
+            actual = current_alloc.get(ticker, 0)
+            if actual < target * 0.9:
+                suggestions.append(f"**{ticker}** — Strongly recommended. Currently under target ({actual:.1f}% vs {target:.1f}%). High volatility supports strong premium generation.")
+    
+    if not suggestions:
+        suggestions.append("Portfolio is well-balanced. Consider adding to **SOXL** or **TQQQ** for maximum premium potential, or **IBIT** if Bitcoin sentiment remains strong.")
+    
+    for s in suggestions:
+        st.write(s)
+    
+    st.caption("Suggestion based on current allocation, premium optimization, and diversification.")
+else:
+    st.info("Record some premium income to see personalized reinvestment suggestions.")
+
+# === MONTHLY PREMIUM BAR CHART ===
+st.subheader("📅 Monthly Premium Income vs $100K Goal")
+
+if history:
+    df_hist = pd.DataFrame(history)
+    df_hist["date"] = pd.to_datetime(df_hist["date"], errors="coerce")
+    df_hist = df_hist.dropna(subset=["date"])
+    df_hist["month"] = df_hist["date"].dt.strftime("%Y-%m")
+    monthly = df_hist.groupby("month")["premium"].sum().reset_index()
+    monthly = monthly.sort_values("month")
+    
+    fig_bar = go.Figure()
+    fig_bar.add_trace(go.Bar(
+        x=monthly["month"], 
+        y=monthly["premium"], 
+        name="Premium Earned",
+        marker_color="#1E90FF"
+    ))
+    fig_bar.add_hline(y=PREMIUM_TARGET_MONTHLY, line_dash="dash", annotation_text="$100K Goal", line_color="red")
+    fig_bar.update_layout(
+        height=400, 
+        xaxis_title="Month",
+        yaxis_title="Premium ($)",
+        title="Monthly Premium Income"
+    )
+    st.plotly_chart(fig_bar, use_container_width=True)
+else:
+    st.info("No premium data recorded yet. Use 'Record Premium' in Manual Updates.")
 
 # === MANUAL UPDATES ===
 with st.expander("📊 Manual Updates"):
@@ -562,4 +706,4 @@ if history:
     fig.update_layout(height=550)
     st.plotly_chart(fig, use_container_width=True)
 
-st.caption("Wealth Growth Pro — Multiple options per ticker supported")
+st.caption("Wealth Growth Pro — Reset button now fully clears all data | Compatible with old sessions")

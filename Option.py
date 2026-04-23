@@ -67,8 +67,10 @@ def save_version(data, is_session_start=False):
     version_file = f"{HISTORY_DIR}{timestamp}.json"
     with open(version_file, "w") as f:
         json.dump(data, f, indent=2)
+    
     with open(LATEST_FILE, "w") as f:
         json.dump(data, f, indent=2)
+    
     if is_session_start:
         st.session_state.last_session_start = timestamp
 
@@ -79,6 +81,7 @@ def load_latest():
                 return json.load(f)
         except:
             pass
+    
     default_etfs = {}
     for ticker, pct in TARGET_ALLOCATIONS.items():
         default_etfs[ticker] = {
@@ -92,6 +95,7 @@ def load_latest():
             "current_strike": 0.0,
             "current_expiry": ""
         }
+    
     return {
         "etfs": default_etfs,
         "history": [],
@@ -198,11 +202,15 @@ with st.expander(f"🕒 Session History & Restore ({username})", expanded=False)
         if uploaded is not None:
             try:
                 backup_data = json.load(uploaded)
-                if st.button("Restore from this file (overwrites current data)", type="primary"):
-                    with open(LATEST_FILE, "w") as f:
-                        json.dump(backup_data, f, indent=2)
-                    st.success("Backup restored! Refreshing page...")
-                    st.rerun()
+                required = ["etfs", "history", "initial_capital", "capital_additions", "option_trades"]
+                if all(k in backup_data for k in required):
+                    if st.button("Restore from this file (overwrites current data)", type="primary"):
+                        with open(LATEST_FILE, "w") as f:
+                            json.dump(backup_data, f, indent=2)
+                        st.success("Backup restored! Refreshing page...")
+                        st.rerun()
+                else:
+                    st.error("Invalid backup — missing required sections")
             except Exception as e:
                 st.error(f"Error reading file: {str(e)}")
 

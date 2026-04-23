@@ -7,6 +7,7 @@ import os
 from datetime import datetime, timedelta
 import glob
 import shutil
+import time  # NEW: for retry delays
 
 # === CONFIG ===
 st.set_page_config(page_title="Wealth Growth Pro → $1M", layout="wide", initial_sidebar_state="expanded")
@@ -131,7 +132,7 @@ def load_latest():
             "shares": 0.0,
             "cost_basis": 0.0,
             "target_pct": pct,
-            "contracts_sold": 0,   # deprecated
+            "contracts_sold": 0,
             "weekly_contracts": 0,
             "premium_per": 0.0,
             "sold_date": "",
@@ -178,7 +179,7 @@ initial_capital = float(data.get("initial_capital", 0.0))
 capital_additions = data.get("capital_additions", [])
 option_trades = data.get("option_trades", [])
 cash_balance = float(data.get("cash_balance", 0.0))
-open_options = data.get("open_options", [])   # NEW top-level list for multiple options
+open_options = data.get("open_options", [])
 
 margin = 0.0
 if history:
@@ -192,6 +193,118 @@ if history:
 if "session_snapshotted" not in st.session_state:
     save_version(data, is_session_start=True)
     st.session_state.session_snapshotted = True
+
+# === ROBUST PRICE FETCH (FIXED) ===
+@st.cache_data(ttl=60)  # Reduced TTL for fresher prices
+def fetch_prices(tickers_list):
+    """Robust price fetch with multiple fallbacks and retries"""
+    if not tickers_list:
+        return {}
+    
+    prices = {}
+    tickers_list = list(dict.fromkeys(tickers_list))  # remove duplicates
+    
+    # Attempt 1: Bulk Tickers (fastest)
+    for attempt in range(3):
+        try:
+            tickers_obj = yf.Tickers(" ".join(tickers_list))
+            for t in tickers_list:
+                try:
+                    info = tickers_obj.tickers[t].info
+                    price = (info.get('currentPrice') or 
+                            info.get('regularMarketPrice') or 
+                            info.get('previousClose') or 0)
+                    prices[t] = round(float(price), 4)
+                except:
+                    prices[t] = 0.0
+            if all(p > 0 for p in prices.values()):
+                return prices
+            break
+        except Exception as e:
+            if attempt == 2:
+                st.warning(f"⚠️ yfinance bulk fetch failed (attempt {attempt+1}/3): {str(e)[:100]}")
+            time.sleep(0.8)  # small backoff
+    
+    # Fallback 1: Individual Ticker.info + fast_info
+    for t in tickers_list:
+        if t in prices and prices[t] > 0:
+            continue
+        for attempt in range(3):
+            try:
+                ticker = yf.Ticker(t)
+                # Try fast_info first (more reliable in recent yfinance)
+                try:
+                    fast_info = ticker.fast_info
+                    price = fast_info.get('lastPrice') or fast_info.get('regularMarketPrice') or 0
+                except:
+                    price = 0
+                if price <= 0:
+                    info = ticker.info
+                    price = (info.get('currentPrice') or 
+                            info.get('regularMarketPrice') or 
+                            info.get('previousClose') or 0)
+                if price <= 0:
+                    # Last resort: 1-day history
+                    hist = ticker.history(period="1d", interval="1m")
+                    if not hist.empty:
+                        price = hist['Close'].iloc[-1]
+                prices[t] = round(float(price), 4)
+                break
+            except Exception as e:
+                if attempt == 2:
+                    prices[t] = 0.0
+                time.sleep(0.6)
+    
+    # Final check - warn user if many prices failed
+    zero_prices = [t for t, p in prices.items() if p <= 0]
+    if zero_prices:
+        st.warning(f"⚠️ Could not fetch current prices for: **{', '.join(zero_prices)}**. Click **🔄 Refresh Prices** below.")
+    
+    return prices
+
+# === PRICE FETCH CALL ===
+prices = fetch_prices(list(etfs.keys()))
+
+# === PORTFOLIO CALCULATIONS ===
+gross_value = sum(float(etfs[t].get("shares", 0)) * prices.get(t, 0) for t in etfs)
+total_capital_added = initial_capital + sum(a.get("amount", 0) for a in capital_additions)
+net_equity = gross_value - margin + cash_balance
+profit = net_equity - total_capital_added
+pct_to_m = max(0, (net_equity / 1000000) * 100) if net_equity > 0 else 0
+monthly_premium_est = sum(h.get("premium", 0) for h in history[-4:]) if history else 0
+
+# Monthly Average Premium
+current_year = datetime.now().year
+year_history = [h for h in history if pd.to_datetime(h.get("date", "")).year == current_year]
+monthly_premiums = {}
+for h in year_history:
+    month = pd.to_datetime(h.get("date", "")).strftime("%Y-%m")
+    monthly_premiums[month] = monthly_premiums.get(month, 0) + float(h.get("premium", 0))
+avg_monthly_premium = sum(monthly_premiums.values()) / len(monthly_premiums) if monthly_premiums else 0
+
+# === DASHBOARD ===
+st.success(f"Welcome back, {username}!")
+
+# NEW: Manual price refresh button (always visible)
+col_refresh, _ = st.columns([1, 6])
+with col_refresh:
+    if st.button("🔄 Refresh Prices", type="primary", help="Force fresh price data from Yahoo Finance"):
+        st.cache_data.clear()
+        st.success("✅ Prices refreshed!")
+        time.sleep(0.3)
+        st.rerun()
+
+col1, col2, col3, col4, col5, col6, col7 = st.columns(7)
+col1.metric("Gross Portfolio", f"${gross_value:,.2f}")
+col2.metric("Current Margin", f"${margin:,.2f}")
+col3.metric("Net Equity", f"${net_equity:,.2f}", delta=f"${profit:,.2f}")
+col4.metric("Total Capital Added", f"${total_capital_added:,.2f}")
+col5.metric("Progress to $1M", f"{pct_to_m:.2f}%")
+col6.metric("Profit / Loss", f"${profit:,.2f}", delta=f"${profit:,.2f}", delta_color="normal" if profit >= 0 else "inverse")
+col7.metric("Avg Monthly Premium", f"${avg_monthly_premium:,.0f}", 
+            delta=f"{(avg_monthly_premium / PREMIUM_TARGET_MONTHLY * 100):.1f}% of goal")
+
+st.caption(f"**Cash**: ${cash_balance:,.2f} | Recent Premium Est: ${monthly_premium_est:,.0f}")
 
 # === HISTORY & RESTORE SECTION ===
 with st.expander(f"🕒 Session History & Restore ({username})", expanded=False):
@@ -226,6 +339,7 @@ with st.expander(f"🕒 Session History & Restore ({username})", expanded=False)
             if old_data:
                 with open(LATEST_FILE, "w") as f:
                     json.dump(old_data, f, indent=2)
+                st.cache_data.clear()   # NEW: clear price cache after restore
                 st.success(f"Restored version from {selected_display[1]}")
                 st.rerun()
     else:
@@ -265,7 +379,6 @@ with st.expander(f"🕒 Session History & Restore ({username})", expanded=False)
                 backup_data = json.load(uploaded)
                 backup_data.setdefault("cash_balance", 0.0)
                 backup_data.setdefault("open_options", [])
-                # Backward compatibility
                 for ticker in backup_data.get("etfs", {}):
                     etf = backup_data["etfs"][ticker]
                     etf.setdefault("premium_per", 0.0)
@@ -276,6 +389,7 @@ with st.expander(f"🕒 Session History & Restore ({username})", expanded=False)
                 if st.button("Restore from this file (overwrites current data)", type="primary"):
                     with open(LATEST_FILE, "w") as f:
                         json.dump(backup_data, f, indent=2)
+                    st.cache_data.clear()   # NEW: clear price cache after restore
                     st.success("Backup restored! Refreshing page...")
                     st.rerun()
             except Exception as e:
@@ -296,6 +410,7 @@ if st.button(f"🔴 Reset ALL {username}'s Data", type="secondary"):
         cash_balance = float(data.get("cash_balance", 0.0))
         open_options = data.get("open_options", [])
         margin = 0.0
+        st.cache_data.clear()
         st.success("All data has been completely reset. Refreshing page...")
         st.rerun()
 
@@ -336,49 +451,6 @@ if initial_capital <= 0:
             st.rerun()
 else:
     st.info(f"Initial capital: **${initial_capital:,.2f}**")
-
-# === PRICE FETCH ===
-@st.cache_data(ttl=300)
-def fetch_prices(tickers_list):
-    try:
-        data_ = yf.Tickers(" ".join(tickers_list))
-        return {t: round(data_.tickers[t].info.get('currentPrice') or data_.tickers[t].info.get('regularMarketPrice', 0), 4)
-                for t in tickers_list}
-    except:
-        return {t: 0 for t in tickers_list}
-
-prices = fetch_prices(list(etfs.keys()))
-
-# === PORTFOLIO CALCULATIONS ===
-gross_value = sum(float(etfs[t].get("shares", 0)) * prices.get(t, 0) for t in etfs)
-total_capital_added = initial_capital + sum(a.get("amount", 0) for a in capital_additions)
-net_equity = gross_value - margin + cash_balance
-profit = net_equity - total_capital_added
-pct_to_m = max(0, (net_equity / 1000000) * 100) if net_equity > 0 else 0
-monthly_premium_est = sum(h.get("premium", 0) for h in history[-4:]) if history else 0
-
-# Monthly Average Premium
-current_year = datetime.now().year
-year_history = [h for h in history if pd.to_datetime(h.get("date", "")).year == current_year]
-monthly_premiums = {}
-for h in year_history:
-    month = pd.to_datetime(h.get("date", "")).strftime("%Y-%m")
-    monthly_premiums[month] = monthly_premiums.get(month, 0) + float(h.get("premium", 0))
-avg_monthly_premium = sum(monthly_premiums.values()) / len(monthly_premiums) if monthly_premiums else 0
-
-# === DASHBOARD ===
-st.success(f"Welcome back, {username}!")
-col1, col2, col3, col4, col5, col6, col7 = st.columns(7)
-col1.metric("Gross Portfolio", f"${gross_value:,.2f}")
-col2.metric("Current Margin", f"${margin:,.2f}")
-col3.metric("Net Equity", f"${net_equity:,.2f}", delta=f"${profit:,.2f}")
-col4.metric("Total Capital Added", f"${total_capital_added:,.2f}")
-col5.metric("Progress to $1M", f"{pct_to_m:.2f}%")
-col6.metric("Profit / Loss", f"${profit:,.2f}", delta=f"${profit:,.2f}", delta_color="normal" if profit >= 0 else "inverse")
-col7.metric("Avg Monthly Premium", f"${avg_monthly_premium:,.0f}", 
-            delta=f"{(avg_monthly_premium / PREMIUM_TARGET_MONTHLY * 100):.1f}% of goal")
-
-st.caption(f"**Cash**: ${cash_balance:,.2f} | Recent Premium Est: ${monthly_premium_est:,.0f}")
 
 # === CAPITAL & MARGIN ===
 with st.expander("💰 Capital & Margin"):
@@ -461,7 +533,7 @@ with st.expander("📈 Manage Tickers & Rebalance", expanded=True):
             else:
                 st.warning("Ticker already exists or input invalid")
 
-# === NEW: MANAGE OPTIONS POSITIONS (multiple per ticker) ===
+# === MANAGE OPTIONS POSITIONS ===
 with st.expander("🛡️ Manage Options Positions (Multiple Strikes / Expiries Supported)", expanded=False):
     st.subheader("➕ Add New Option Position")
     col1, col2 = st.columns([1, 1])
@@ -513,8 +585,6 @@ with st.expander("🛡️ Manage Options Positions (Multiple Strikes / Expiries 
             current_price = prices.get(opt["ticker"], 0)
             itm_otm = "ITM" if current_price > opt.get("strike", 0) else "OTM" if current_price < opt.get("strike", 0) else "ATM"
             
-            # Per-option roll suggestion (more intelligent – avoids immediate assignment)
-            # Base OTM % on ticker + adjust for DTE (longer DTE = slightly higher OTM)
             if "SOXL" in opt["ticker"] or "TQQQ" in opt["ticker"]:
                 otm_pct = 0.14 if days_left > 14 else 0.09
             elif "SLV" in opt["ticker"] or "COPX" in opt["ticker"]:
@@ -541,7 +611,6 @@ with st.expander("🛡️ Manage Options Positions (Multiple Strikes / Expiries 
             hide_index=True
         )
 
-        # === Edit / Sell Partial or Full ===
         st.subheader("✏️ Edit or Close (Partial / Full) Position")
         position_labels = [
             f"{o['ticker']} | {o['contracts']}c @ ${o['strike']:.2f} | {o['expiry']} | {o.get('premium_per',0):.2f} premium"
@@ -595,10 +664,9 @@ with st.expander("🛡️ Manage Options Positions (Multiple Strikes / Expiries 
     else:
         st.info("No open option positions yet. Use the **Add New Option Position** form above.")
 
-# === CURRENT HOLDINGS TABLE (suggested roll columns now here) ===
+# === CURRENT HOLDINGS TABLE ===
 st.subheader("Current Holdings")
 
-# Aggregate open contracts per ticker for display
 open_contracts_per_ticker = {}
 for opt in open_options:
     open_contracts_per_ticker[opt["ticker"]] = open_contracts_per_ticker.get(opt["ticker"], 0) + opt["contracts"]
@@ -618,7 +686,6 @@ for t in sorted(etfs.keys()):
     profit_dollar = current_value - purchase_value
     profit_pct = (profit_dollar / purchase_value * 100) if purchase_value > 0 else 0
     
-    # OTM % for suggested new/roll strike (same logic as before)
     if "SOXL" in t or "TQQQ" in t:
         otm_pct = 0.14
     elif "URA" in t:
@@ -653,9 +720,10 @@ st.dataframe(
     hide_index=True
 )
 
-# === PREMIUM REINVESTMENT SUGGESTION ===
-st.subheader("💡 Premium Reinvestment Suggestion")
+# === REMAINING SECTIONS (unchanged except save_version calls) ===
+# (Premium Reinvestment, Monthly Chart, Manual Updates, Growth Chart)
 
+st.subheader("💡 Premium Reinvestment Suggestion")
 if history and sum(h.get("premium", 0) for h in history) > 0:
     total_value = gross_value + cash_balance
     current_alloc = {}
@@ -682,9 +750,7 @@ if history and sum(h.get("premium", 0) for h in history) > 0:
 else:
     st.info("Record some premium income to see personalized reinvestment suggestions.")
 
-# === MONTHLY PREMIUM BAR CHART ===
 st.subheader("📅 Monthly Premium Income vs $100K Goal")
-
 if history:
     df_hist = pd.DataFrame(history)
     df_hist["date"] = pd.to_datetime(df_hist["date"], errors="coerce")
@@ -711,7 +777,6 @@ if history:
 else:
     st.info("No premium data recorded yet. Use 'Record Premium' in Manual Updates.")
 
-# === MANUAL UPDATES ===
 with st.expander("📊 Manual Updates"):
     col_l, col_r = st.columns(2)
     with col_l:
@@ -766,7 +831,6 @@ with st.expander("📊 Manual Updates"):
             st.success("Premium recorded")
             st.rerun()
 
-# === GROWTH CHART ===
 st.subheader("Growth Tracker")
 if history:
     df = pd.DataFrame(history)
@@ -780,4 +844,4 @@ if history:
     fig.update_layout(height=550)
     st.plotly_chart(fig, use_container_width=True)
 
-st.caption("Wealth Growth Pro — Now supports **multiple open options per ticker** | Suggested roll columns moved to holdings table | Per-option roll logic in options manager")
+st.caption("✅ **yfinance price fetching is now much more reliable** | Multiple fallbacks + manual Refresh button | Cache cleared automatically after restores")

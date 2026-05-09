@@ -5,7 +5,7 @@ from datetime import datetime, timedelta
 
 st.set_page_config(page_title="LEAPs Lag Hunter", layout="wide")
 st.title("🚀 LEAPs Lag Hunter")
-st.markdown("**Very Sensitive Mode • Top 5 Opportunities • With Reasoning**")
+st.markdown("**Very Sensitive Mode • Top 5 Opportunities with Reasoning**")
 
 # Session State
 if "tickers" not in st.session_state:
@@ -13,7 +13,7 @@ if "tickers" not in st.session_state:
 if "opportunities" not in st.session_state:
     st.session_state.opportunities = {}
 
-# Budget Input
+# Budget
 st.sidebar.subheader("💰 Your Trading Budget")
 budget = st.sidebar.number_input("Available Budget ($)", min_value=500, value=5000, step=500)
 
@@ -70,15 +70,14 @@ def analyze_leap_lag(ticker, dummy_mode=False, dummy_date=None, dummy_time=None)
                         "sell_target": round(predicted_sell, 2),
                         "profit_pct": round(profit_pct, 1),
                         "move_pct": round(move_pct, 2),
-                        "last_price": last_price,
-                        "reason": f"Stock moved {move_pct:.1f}% in short time. Long-dated {exp} call is lagging behind due to lower gamma.",
-                        "target_reason": f"Buy near current market price. Expected quick catch-up as market makers adjust.",
-                        "profit_reason": f"Conservative momentum-based estimate for {ticker}."
+                        "reason": f"Stock moved {move_pct:.1f}% recently. Long-dated option lagging.",
+                        "target_reason": "Buy near current price expecting quick catch-up.",
+                        "profit_reason": "Momentum-based estimate."
                     })
         
-        return sorted(opportunities, key=lambda x: x['profit_pct'], reverse=True)[:5]   # ← Top 5 only
+        return sorted(opportunities, key=lambda x: x['profit_pct'], reverse=True)[:5]
         
-    except Exception:
+    except:
         return []
 
 # ==================== UI ====================
@@ -111,7 +110,7 @@ for ticker in st.session_state.tickers:
             st.session_state.opportunities[ticker] = result
             st.rerun()
     
-    # === OPPORTUNITIES LIST (Top 5) ===
+    # Top 5 Opportunities
     if ticker in st.session_state.opportunities:
         opps = st.session_state.opportunities[ticker]
         if opps:
@@ -126,43 +125,39 @@ for ticker in st.session_state.tickers:
                         st.metric("Buy Target", f"${opp['buy_target']}")
                         st.metric("Sell Target", f"${opp['sell_target']}")
                     with c3:
-                        st.metric("Est. Profit", f"{opp['profit_pct']}%", delta=f"{opp['profit_pct']}%")
+                        st.metric("Est. Profit %", f"{opp['profit_pct']}%", delta=f"{opp['profit_pct']}%")
                     
-                    st.markdown("**Why this one?**")
+                    st.markdown("**Why this opportunity?**")
                     st.write(opp["reason"])
                     st.write(opp["target_reason"])
                     st.write(opp["profit_reason"])
         else:
             st.warning("No opportunities > 2% found.")
-    else:
-        st.info("Click **Scan** to analyze")
 
-    # === BEST OPPORTUNITY FOR YOUR BUDGET ===
+    # === BEST FOR BUDGET (Now based on TOTAL $ Profit) ===
     if ticker in st.session_state.opportunities and st.session_state.opportunities[ticker]:
-        best = st.session_state.opportunities[ticker][0]
+        # Sort by total dollar profit instead of %
+        best = max(st.session_state.opportunities[ticker], 
+                   key=lambda x: (budget // (x['buy_target'] * 100)) * (x['sell_target'] - x['buy_target']) * 100)
+        
         option_cost = best['buy_target'] * 100
         max_contracts = int(budget // option_cost)
         
-        if max_contracts > 0:
-            total_investment = max_contracts * option_cost
-            est_profit = max_contracts * (best['sell_target'] - best['buy_target']) * 100
+        st.subheader(f"💎 Best Opportunity for Your ${budget:,.0f} Budget")
+        with st.container(border=True):
+            st.success(f"**Recommended: {ticker} {best['expiry']} ${best['strike']} Call**")
             
-            st.subheader(f"💎 Best Opportunity for Your ${budget:,.0f} Budget")
-            with st.container(border=True):
-                st.success(f"**Recommended: {ticker} {best['expiry']} ${best['strike']} Call**")
-                
-                col1, col2, col3 = st.columns(3)
-                with col1:
-                    st.metric("Contracts You Can Buy", max_contracts)
-                    st.metric("Total Investment", f"${total_investment:,.0f}")
-                with col2:
-                    st.metric("Buy Price", f"${best['buy_target']:.2f}")
-                    st.metric("Target Sell", f"${best['sell_target']:.2f}")
-                with col3:
-                    st.metric("Expected Profit", f"${est_profit:,.0f}", delta=f"{best['profit_pct']}%")
-                
-                st.info(f"**Reason:** Strong recent momentum with lag in this long-dated option. Good risk-reward for quick catch-up.")
-        else:
-            st.warning("Budget too low to buy even 1 contract.")
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                st.metric("Contracts You Can Buy", max_contracts)
+                st.metric("Total Investment", f"${max_contracts * option_cost:,.0f}")
+            with col2:
+                st.metric("Buy Target", f"${best['buy_target']:.2f}")
+                st.metric("Target Sell", f"${best['sell_target']:.2f}")
+            with col3:
+                est_profit = max_contracts * (best['sell_target'] - best['buy_target']) * 100
+                st.metric("Expected Profit Today", f"${est_profit:,.0f}", delta=f"{best['profit_pct']}%")
+            
+            st.info(f"**Reason:** This gives the **highest total dollar profit** within your budget due to favorable price per contract.")
 
-st.caption("LEAPs Lag Hunter • Top 5 only • With full reasoning • Budget optimized")
+st.caption("LEAPs Lag Hunter • Now optimized for maximum total dollar profit within budget")

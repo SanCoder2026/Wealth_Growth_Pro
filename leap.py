@@ -5,7 +5,7 @@ from datetime import datetime, timedelta
 
 st.set_page_config(page_title="LEAPs Lag Hunter", layout="wide")
 st.title("🚀 LEAPs Lag Hunter")
-st.markdown("**Any profit > 2% is shown** - Very sensitive mode")
+st.markdown("**Very Sensitive Mode • Any profit > 2% shown**")
 
 if "tickers" not in st.session_state:
     st.session_state.tickers = ["SOXL"]
@@ -20,60 +20,59 @@ def analyze_leap_lag(ticker, dummy_mode=False, dummy_date=None, dummy_time=None)
         
         if dummy_mode and dummy_date and dummy_time:
             target_dt = datetime.combine(dummy_date, dummy_time)
-            debug.append(f"Target: {target_dt}")
+            debug.append(f"Target time: {target_dt}")
             
             hist = tk.history(start=target_dt - timedelta(days=7), 
                             end=target_dt + timedelta(days=2), 
                             interval="5m")
             if hist.empty:
-                return [], "No data"
+                return [], "No historical data available"
             
             hist.index = hist.index.tz_localize(None)
-            closest_idx = (hist.index - target_dt).abs().argmin()
+            
+            # Fixed line for TimedeltaIndex issue
+            time_diffs = (hist.index - target_dt).map(abs)
+            closest_idx = time_diffs.argmin()
             current_price = float(hist['Close'].iloc[closest_idx])
-            debug.append(f"Price at time: ${current_price:.2f}")
+            debug.append(f"Closest price: ${current_price:.2f} at {hist.index[closest_idx]}")
             
             later_idx = min(closest_idx + 12, len(hist)-1)
             price_later = float(hist['Close'].iloc[later_idx])
             move_pct = (price_later - current_price) / current_price * 100
-            debug.append(f"1h move: {move_pct:.2f}%")
+            debug.append(f"Simulated 1h move: {move_pct:.2f}%")
         else:
             hist = tk.history(period="2d", interval="5m")
+            if len(hist) < 10:
+                return [], "Not enough live data"
             current_price = float(hist['Close'].iloc[-1])
             price_ago = float(hist['Close'].iloc[-13] if len(hist) >= 13 else hist['Close'].iloc[0])
             move_pct = (current_price - price_ago) / price_ago * 100
 
-        debug.append(f"Current Price: ${current_price:.2f} | Move: {move_pct:.2f}%")
+        debug.append(f"Final Move: {move_pct:.2f}% | Price: ${current_price:.2f}")
 
-        # Get long-dated options
+        # Long-dated options
         expirations = tk.options
         long_exps = [exp for exp in expirations 
                      if 180 <= (datetime.strptime(exp, "%Y-%m-%d") - datetime.now()).days <= 730]
 
         opportunities = []
         
-        for exp in long_exps[:12]:
+        for exp in long_exps[:15]:
             chain = tk.option_chain(exp)
             calls = chain.calls
-            
-            # Very wide range
             relevant = calls[calls['strike'].between(current_price * 0.75, current_price * 1.40)]
             
             for _, row in relevant.iterrows():
                 strike = float(row['strike'])
                 last_price = float(row['lastPrice'])
-                if last_price < 0.08:
+                if last_price < 0.10:
                     continue
                 
-                intrinsic = max(0, current_price - strike)
-                extrinsic = last_price - intrinsic
-                
-                # Aggressive catch-up
-                expected_catch = abs(move_pct) * 0.65 * (current_price * 0.015)
+                expected_catch = abs(move_pct) * 0.7 * (current_price * 0.015)   # Aggressive
                 predicted_sell = last_price + expected_catch
                 profit_pct = ((predicted_sell - last_price) / last_price) * 100 if last_price > 0 else 0
                 
-                if profit_pct > 2.0:        # ← As you requested
+                if profit_pct > 2.0:
                     opportunities.append({
                         "expiry": exp,
                         "strike": round(strike, 2),
@@ -140,6 +139,6 @@ for ticker in st.session_state.tickers:
             if 'debug' in st.session_state:
                 st.code(st.session_state.debug)
     else:
-        st.info("Click Scan button")
+        st.info("Click **Scan** button above")
 
-st.caption("Very sensitive mode • Any profit > 2% is shown • Debug info shown when no results")
+st.caption("Extremely sensitive mode • Debug info shown when no results")

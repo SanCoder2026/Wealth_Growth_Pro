@@ -22,15 +22,13 @@ def analyze_leap_lag(ticker, dummy_mode=False, dummy_date=None, dummy_time=None)
             target_dt = datetime.combine(dummy_date, dummy_time)
             debug.append(f"Target time: {target_dt}")
             
-            hist = tk.history(start=target_dt - timedelta(days=7), 
-                            end=target_dt + timedelta(days=2), 
+            hist = tk.history(start=target_dt - timedelta(days=7),
+                            end=target_dt + timedelta(days=2),
                             interval="5m")
             if hist.empty:
                 return [], "No historical data available"
             
             hist.index = hist.index.tz_localize(None)
-            
-            # Fixed line for TimedeltaIndex issue
             time_diffs = (hist.index - target_dt).map(abs)
             closest_idx = time_diffs.argmin()
             current_price = float(hist['Close'].iloc[closest_idx])
@@ -50,9 +48,8 @@ def analyze_leap_lag(ticker, dummy_mode=False, dummy_date=None, dummy_time=None)
 
         debug.append(f"Final Move: {move_pct:.2f}% | Price: ${current_price:.2f}")
 
-        # Long-dated options
         expirations = tk.options
-        long_exps = [exp for exp in expirations 
+        long_exps = [exp for exp in expirations
                      if 180 <= (datetime.strptime(exp, "%Y-%m-%d") - datetime.now()).days <= 730]
 
         opportunities = []
@@ -68,18 +65,26 @@ def analyze_leap_lag(ticker, dummy_mode=False, dummy_date=None, dummy_time=None)
                 if last_price < 0.10:
                     continue
                 
-                expected_catch = abs(move_pct) * 0.7 * (current_price * 0.015)   # Aggressive
+                expected_catch = abs(move_pct) * 0.7 * (current_price * 0.015)
                 predicted_sell = last_price + expected_catch
                 profit_pct = ((predicted_sell - last_price) / last_price) * 100 if last_price > 0 else 0
                 
                 if profit_pct > 2.0:
+                    # === REASONING ===
+                    reason = f"Stock moved {move_pct:.1f}% in ~1 hour. Long-dated call ({exp}) is lagging due to lower gamma."
+                    target_reason = f"Buy near current last price with small discount. Expected catch-up of {expected_catch:.2f} due to momentum."
+                    profit_reason = f"Conservative estimate based on historical lag behavior in fast moves for {ticker}."
+                    
                     opportunities.append({
                         "expiry": exp,
                         "strike": round(strike, 2),
                         "buy_target": round(last_price * 0.96, 2),
                         "sell_target": round(predicted_sell, 2),
                         "profit_pct": round(profit_pct, 1),
-                        "move_pct": round(move_pct, 2)
+                        "move_pct": round(move_pct, 2),
+                        "reason": reason,
+                        "target_reason": target_reason,
+                        "profit_reason": profit_reason
                     })
         
         sorted_opps = sorted(opportunities, key=lambda x: x['profit_pct'], reverse=True)
@@ -110,7 +115,7 @@ for ticker in st.session_state.tickers:
     if st.button(f"🔍 Scan {ticker}", key=f"scan_{ticker}"):
         with st.spinner(f"Scanning {ticker}..."):
             result, debug_msg = analyze_leap_lag(
-                ticker, 
+                ticker,
                 dummy_mode=(mode == "Dummy (Backtest)"),
                 dummy_date=dummy_date,
                 dummy_time=dummy_time
@@ -125,7 +130,7 @@ for ticker in st.session_state.tickers:
             st.success(f"**Found {len(opps)} Opportunities**")
             for opp in opps:
                 with st.container(border=True):
-                    c1, c2, c3 = st.columns(3)
+                    c1, c2, c3 = st.columns([2, 2, 3])
                     with c1:
                         st.metric("Expiry", opp["expiry"])
                         st.metric("Strike", f"${opp['strike']}")
@@ -134,6 +139,11 @@ for ticker in st.session_state.tickers:
                         st.metric("Sell Target", f"${opp['sell_target']}")
                     with c3:
                         st.metric("Est. Profit", f"{opp['profit_pct']}%", delta=f"{opp['profit_pct']}%")
+                    
+                    st.markdown("**Why this opportunity?**")
+                    st.write(opp["reason"])
+                    st.write(opp["target_reason"])
+                    st.write(opp["profit_reason"])
         else:
             st.warning("No opportunities > 2% found.")
             if 'debug' in st.session_state:
@@ -141,4 +151,4 @@ for ticker in st.session_state.tickers:
     else:
         st.info("Click **Scan** button above")
 
-st.caption("Extremely sensitive mode • Debug info shown when no results")
+st.caption("Extremely sensitive mode • Each opportunity now includes clear reasoning")

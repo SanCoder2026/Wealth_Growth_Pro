@@ -6,3 +6,4 @@ alpaca-py
 urllib3<2
 gspread
 google-auth
+polygon

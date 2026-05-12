@@ -6,7 +6,7 @@ import os
 
 st.set_page_config(page_title="LEAPs Lag Hunter", layout="wide")
 st.title("🚀 LEAPs Lag Hunter")
-st.markdown("**Debug Mode - Verifying Polygon Data**")
+st.markdown("**MAX DEBUG MODE • Verifying Polygon.io Data**")
 
 # Session State
 if "tickers" not in st.session_state:
@@ -26,28 +26,30 @@ client = RESTClient(api_key=api_key)
 st.sidebar.subheader("💰 Budget")
 budget = st.sidebar.number_input("Available Budget ($)", min_value=500, value=5000, step=500)
 
-st.sidebar.subheader("⚙️ Settings")
-profit_threshold = st.sidebar.slider("Min Profit % Threshold", 0.1, 5.0, 0.8, 0.1)
-show_debug = st.sidebar.checkbox("Show Full Debug Info", value=True)
+st.sidebar.subheader("⚙️ Debug Settings")
+profit_threshold = st.sidebar.slider("Minimum Profit % Threshold", 0.1, 10.0, 0.5, 0.1)
+aggressive_mode = st.sidebar.checkbox("Aggressive Test Mode (3x catch-up)", value=True)
+show_all_candidates = st.sidebar.checkbox("Show Full Candidate LEAPs Table", value=True)
 
 # ==================== ANALYSIS FUNCTION ====================
 def analyze_leap_lag(ticker, dummy_mode=False, dummy_date=None, dummy_time=None):
     try:
-        st.subheader(f"🔍 Analyzing {ticker}")
+        st.subheader(f"🔍 Scanning {ticker}...")
 
-        # === STOCK DATA ===
+        # === 1. STOCK PRICE & MOVE (this part already works) ===
         if dummy_mode and dummy_date and dummy_time:
             target_dt = datetime.combine(dummy_date, dummy_time)
             from_date = (target_dt - timedelta(days=7)).date()
             to_date = (target_dt + timedelta(days=2)).date()
             aggs = list(client.list_aggs(ticker, 5, "minute", from_=from_date, to=to_date, limit=50000))
+            st.info("🕒 Using DUMMY mode (historical stock bars)")
         else:
             from_date = (datetime.now() - timedelta(days=2)).date()
             to_date = datetime.now().date()
             aggs = list(client.list_aggs(ticker, 5, "minute", from_=from_date, to=to_date, limit=50000))
 
         if len(aggs) < 10:
-            st.error("❌ Not enough stock data from Polygon")
+            st.error("❌ Not enough stock bars from Polygon")
             return [], []
 
         df = pd.DataFrame([{'timestamp': pd.to_datetime(a.timestamp, unit='ms'), 'close': a.close} for a in aggs])
@@ -65,12 +67,12 @@ def analyze_leap_lag(ticker, dummy_mode=False, dummy_date=None, dummy_time=None)
             price_ago = float(df['close'].iloc[-13] if len(df) >= 13 else df['close'].iloc[0])
             move_pct = (current_price - price_ago) / price_ago * 100
 
-        st.success(f"✅ Stock Data: ${current_price:.2f} | Move: {move_pct:+.1f}%")
+        st.success(f"✅ **Stock Data (Polygon)**: ${current_price:.2f} | Recent move: **{move_pct:+.1f}%**")
 
-        # === OPTIONS CHAIN ===
+        # === 2. LONG-DATED LEAP CALLS FROM POLYGON ===
         today = datetime.now().date()
+        candidates = []
         opportunities = []
-        samples = []
 
         params = {
             "expiration_date.gte": (today + timedelta(days=180)).strftime("%Y-%m-%d"),
@@ -79,12 +81,15 @@ def analyze_leap_lag(ticker, dummy_mode=False, dummy_date=None, dummy_time=None)
         }
 
         chain = list(client.list_snapshot_options_chain(ticker, params=params))
-        st.info(f"🔍 Polygon returned **{len(chain)}** long-dated LEAP calls")
+        st.info(f"✅ **Polygon returned {len(chain)} long-dated LEAP calls** for {ticker}")
 
-        for i, opt in enumerate(chain[:15]):  # Show first 15 for debug
+        multiplier = 3.0 if aggressive_mode else 1.0
+
+        for opt in chain:
             strike = float(opt.details.strike_price)
             expiry = opt.details.expiration_date
 
+            # Price extraction
             last_price = 0.0
             if hasattr(opt, 'last_trade') and opt.last_trade and opt.last_trade.price:
                 last_price = float(opt.last_trade.price)
@@ -94,49 +99,53 @@ def analyze_leap_lag(ticker, dummy_mode=False, dummy_date=None, dummy_time=None)
             oi = getattr(opt, 'open_interest', 0)
             vol = getattr(getattr(opt, 'day', None), 'volume', 0)
 
-            samples.append({
-                "strike": strike,
-                "expiry": expiry,
-                "price": last_price,
-                "oi": oi,
-                "vol": vol
-            })
-
+            # Only consider reasonable strikes
             if not (current_price * 0.75 <= strike <= current_price * 1.40):
                 continue
             if last_price < 0.05:
                 continue
 
-            expected_catch = abs(move_pct) * 0.7 * (current_price * 0.015)
+            expected_catch = abs(move_pct) * 0.7 * (current_price * 0.015) * multiplier
             predicted_sell = last_price + expected_catch
-            profit_pct = ((predicted_sell - last_price) / last_price) * 100
+            profit_pct = ((predicted_sell - last_price) / last_price) * 100 if last_price > 0 else 0
+
+            candidate = {
+                "expiry": expiry,
+                "strike": round(strike, 2),
+                "last_price": round(last_price, 2),
+                "expected_catch": round(expected_catch, 2),
+                "predicted_sell": round(predicted_sell, 2),
+                "profit_pct": round(profit_pct, 1),
+                "oi": oi,
+                "vol": vol
+            }
+            candidates.append(candidate)
 
             if profit_pct > profit_threshold:
-                opportunities.append({
-                    "expiry": expiry,
-                    "strike": round(strike, 2),
-                    "buy_target": round(last_price * 0.96, 2),
-                    "sell_target": round(predicted_sell, 2),
-                    "profit_pct": round(profit_pct, 1),
-                    "move_pct": round(move_pct, 2),
-                    "oi": oi,
-                    "vol": vol,
-                    "reason": f"Stock moved **{move_pct:.1f}%**. LEAP lagging.",
-                })
+                opportunities.append(candidate)
 
-        # Show sample data
-        if show_debug and samples:
-            st.subheader("📋 Sample LEAPs from Polygon")
-            sample_df = pd.DataFrame(samples)
-            st.dataframe(sample_df, use_container_width=True)
+        # === DEBUG TABLES ===
+        st.info(f"Found {len(candidates)} candidate LEAPs in strike range")
+
+        if show_all_candidates and candidates:
+            st.subheader("📋 **All Candidate LEAPs from Polygon** (this proves data is coming)")
+            df_candidates = pd.DataFrame(candidates)
+            df_candidates = df_candidates.sort_values(by="profit_pct", ascending=False)
+            st.dataframe(df_candidates.head(20), use_container_width=True)  # Show top 20
 
         opportunities = sorted(opportunities, key=lambda x: x['profit_pct'], reverse=True)[:5]
-        st.success(f"✅ **{len(opportunities)}** opportunities found above {profit_threshold}% threshold")
 
-        return opportunities, []
+        if opportunities:
+            st.success(f"✅ **{len(opportunities)} opportunities found** above {profit_threshold}%")
+        else:
+            st.warning("No opportunities above threshold. See table above for why.")
+
+        return opportunities, candidates
 
     except Exception as e:
         st.error(f"❌ Error: {str(e)}")
+        import traceback
+        st.code(traceback.format_exc())
         return [], []
 
 # ==================== UI ====================
@@ -154,6 +163,7 @@ if mode == "Dummy (Backtest)":
     st.sidebar.subheader("Backtest Settings")
     dummy_date = st.sidebar.date_input("Date", datetime.now().date() - timedelta(days=1))
     dummy_time = st.sidebar.time_input("Time", datetime.strptime("11:00", "%H:%M").time())
+    st.sidebar.warning("⚠️ Note: Dummy mode uses current option prices (not historical)")
 
 for ticker in st.session_state.tickers:
     st.subheader(f"📌 {ticker}")
@@ -172,7 +182,7 @@ for ticker in st.session_state.tickers:
     if ticker in st.session_state.opportunities:
         opps = st.session_state.opportunities[ticker].get("opps", [])
         if opps:
-            st.success(f"**Opportunities for {ticker}**")
+            st.success(f"**Top Opportunities for {ticker}**")
             for opp in opps:
                 with st.container(border=True):
                     c1, c2, c3 = st.columns(3)
@@ -180,11 +190,11 @@ for ticker in st.session_state.tickers:
                         st.metric("Expiry", opp["expiry"])
                         st.metric("Strike", f"${opp['strike']}")
                     with c2:
-                        st.metric("Buy Target", f"${opp['buy_target']}")
-                        st.metric("Sell Target", f"${opp['sell_target']}")
+                        st.metric("Buy Target", f"${opp.get('last_price', opp['buy_target']):.2f}")
+                        st.metric("Sell Target", f"${opp.get('predicted_sell', opp.get('sell_target', 0)):.2f}")
                     with c3:
                         st.metric("Est. Profit", f"{opp['profit_pct']}%", delta=f"{opp['profit_pct']}%")
         else:
-            st.warning("No opportunities found above threshold.")
+            st.warning("No opportunities above threshold found.")
 
-st.caption("LEAPs Lag Hunter • Polygon.io Debug Mode")
+st.caption("LEAPs Lag Hunter • MAX DEBUG • Polygon.io Data Verified")

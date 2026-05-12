@@ -5,8 +5,12 @@ from polygon import RESTClient
 import os
 
 st.set_page_config(page_title="LEAPs Lag Hunter", layout="wide")
-st.title("🚀 LEAPs Lag Hunter")
-st.markdown("**MAXIMUM DEBUG MODE** — Polygon Data Verification")
+st.title("🚀 LEAPs Lag Hunter - FINAL DIAGNOSTIC")
+st.markdown("**Your API Key is now hardcoded**")
+
+# ==================== HARD CODED API KEY ====================
+POLYGON_API_KEY = "uAtvNOthTdL4_e14lb70lFm7EGZhjvqQ"
+client = RESTClient(api_key=POLYGON_API_KEY)
 
 # Session State
 if "tickers" not in st.session_state:
@@ -14,29 +18,20 @@ if "tickers" not in st.session_state:
 if "opportunities" not in st.session_state:
     st.session_state.opportunities = {}
 
-# ==================== SIDEBAR ====================
-st.sidebar.subheader("🔑 Polygon.io API Key")
-api_key = st.sidebar.text_input("API Key", type="password", value=os.getenv("POLYGON_API_KEY", ""))
-if not api_key:
-    st.sidebar.error("API Key missing")
-    st.stop()
-
-client = RESTClient(api_key=api_key)
-
+# Sidebar
 st.sidebar.subheader("💰 Budget")
 budget = st.sidebar.number_input("Available Budget ($)", min_value=500, value=5000, step=500)
 
 st.sidebar.subheader("⚙️ Settings")
-profit_threshold = st.sidebar.slider("Min Profit %", 0.01, 5.0, 0.1, 0.05)
-aggressive = st.sidebar.checkbox("Aggressive Mode (5x expected move)", value=True)
-show_table = st.sidebar.checkbox("Always Show Full LEAPs Table", value=True)
+profit_threshold = st.sidebar.slider("Min Profit % Threshold", 0.01, 5.0, 0.3, 0.05)
+use_fallback = st.sidebar.checkbox("Use Fallback Method", value=True)
+aggressive = st.sidebar.checkbox("Aggressive Mode (Bigger Expected Catch)", value=True)
 
-# ==================== ANALYSIS ====================
 def analyze_leap_lag(ticker, dummy_mode=False, dummy_date=None, dummy_time=None):
     try:
-        st.subheader(f"🔍 {ticker} Analysis")
+        st.subheader(f"🔍 Analyzing {ticker}")
 
-        # Stock Data
+        # === STOCK DATA ===
         if dummy_mode and dummy_date and dummy_time:
             target_dt = datetime.combine(dummy_date, dummy_time)
             from_date = (target_dt - timedelta(days=7)).date()
@@ -48,7 +43,7 @@ def analyze_leap_lag(ticker, dummy_mode=False, dummy_date=None, dummy_time=None)
             aggs = list(client.list_aggs(ticker, 5, "minute", from_=from_date, to=to_date, limit=50000))
 
         if len(aggs) < 5:
-            st.error("No stock data")
+            st.error("❌ Not enough stock data")
             return []
 
         df = pd.DataFrame([{'timestamp': pd.to_datetime(a.timestamp, unit='ms'), 'close': a.close} for a in aggs])
@@ -66,61 +61,109 @@ def analyze_leap_lag(ticker, dummy_mode=False, dummy_date=None, dummy_time=None)
             price_ago = float(df['close'].iloc[-13] if len(df) >= 13 else df['close'].iloc[0])
             move_pct = (current_price - price_ago) / price_ago * 100
 
-        st.success(f"✅ Polygon Stock: **${current_price:.2f}** | Move: **{move_pct:+.1f}%**")
+        st.success(f"✅ Polygon Stock Price: **${current_price:.2f}** | Move: **{move_pct:+.1f}%**")
 
-        # Options
+        # === OPTIONS DATA ===
         today = datetime.now().date()
         candidates = []
-
-        params = {
-            "expiration_date.gte": (today + timedelta(days=180)).strftime("%Y-%m-%d"),
-            "expiration_date.lte": (today + timedelta(days=730)).strftime("%Y-%m-%d"),
-            "contract_type": "call",
-        }
-
-        chain = list(client.list_snapshot_options_chain(ticker, params=params))
-        st.info(f"✅ **{len(chain)} LEAP calls returned by Polygon**")
+        opportunities = []
 
         mult = 5.0 if aggressive else 1.0
 
-        for opt in chain:
-            strike = float(opt.details.strike_price)
-            if not (current_price * 0.70 <= strike <= current_price * 1.50):
-                continue
+        # Try Snapshot Chain first
+        try:
+            params = {
+                "expiration_date.gte": (today + timedelta(days=100)).strftime("%Y-%m-%d"),
+                "contract_type": "call",
+            }
+            chain = list(client.list_snapshot_options_chain(ticker, params=params))
+            st.info(f"✅ Snapshot Chain: {len(chain)} LEAPs found")
+        except:
+            chain = []
+            st.warning("Snapshot failed, trying fallback...")
 
-            last_price = 0.0
-            if hasattr(opt, 'last_trade') and opt.last_trade and opt.last_trade.price:
-                last_price = float(opt.last_trade.price)
-            elif hasattr(opt, 'day') and opt.day and opt.day.close:
-                last_price = float(opt.day.close)
+        if len(chain) == 0 and use_fallback:
+            # Fallback method
+            contracts = list(client.list_options_contracts(
+                underlying_ticker=ticker,
+                expiration_date_gte=(today + timedelta(days=100)).strftime("%Y-%m-%d"),
+                contract_type="call",
+                limit=1000
+            ))
+            st.info(f"✅ Fallback found {len(contracts)} contracts")
 
-            if last_price < 0.05:
-                continue
+            for contract in contracts[:300]:   # Limit requests
+                try:
+                    snap = client.get_snapshot_option(contract.ticker)
+                    last_price = 0.0
+                    if hasattr(snap, 'last_trade') and snap.last_trade and snap.last_trade.price:
+                        last_price = float(snap.last_trade.price)
+                    elif hasattr(snap, 'day') and snap.day and snap.day.close:
+                        last_price = float(snap.day.close)
 
-            expected_catch = abs(move_pct) * 0.7 * (current_price * 0.02) * mult
-            predicted_sell = last_price + expected_catch
-            profit_pct = ((predicted_sell - last_price) / last_price) * 100 if last_price > 0 else 0
+                    strike = float(contract.strike_price)
+                    if not (current_price * 0.7 <= strike <= current_price * 1.5):
+                        continue
+                    if last_price < 0.05:
+                        continue
 
-            candidates.append({
-                "Expiry": opt.details.expiration_date,
-                "Strike": round(strike, 2),
-                "Last Price": round(last_price, 2),
-                "Profit %": round(profit_pct, 2),
-                "OI": getattr(opt, 'open_interest', 0),
-                "Vol": getattr(getattr(opt, 'day', None), 'volume', 0)
-            })
+                    expected_catch = abs(move_pct) * 0.8 * current_price * 0.025 * mult
+                    predicted_sell = last_price + expected_catch
+                    profit_pct = ((predicted_sell - last_price) / last_price) * 100
 
-        if show_table and candidates:
-            st.subheader("📊 All Candidate LEAPs from Polygon (Sorted by Profit)")
-            df_cand = pd.DataFrame(candidates)
-            df_cand = df_cand.sort_values(by="Profit %", ascending=False)
-            st.dataframe(df_cand.head(30), use_container_width=True)
+                    candidates.append({
+                        "Expiry": contract.expiration_date,
+                        "Strike": round(strike, 2),
+                        "Last Price": round(last_price, 2),
+                        "Profit %": round(profit_pct, 2),
+                        "OI": getattr(snap, 'open_interest', 0)
+                    })
 
-        # Opportunities (very low threshold)
-        opps = [c for c in candidates if c["Profit %"] > profit_threshold]
-        st.success(f"**{len(opps)} opportunities** above {profit_threshold}% threshold")
+                    if profit_pct > profit_threshold:
+                        opportunities.append(candidates[-1])
+                except:
+                    continue
+        else:
+            # Use snapshot chain
+            for opt in chain:
+                strike = float(opt.details.strike_price)
+                if not (current_price * 0.7 <= strike <= current_price * 1.5):
+                    continue
 
-        return opps
+                last_price = 0.0
+                if hasattr(opt, 'last_trade') and opt.last_trade and opt.last_trade.price:
+                    last_price = float(opt.last_trade.price)
+                elif hasattr(opt, 'day') and opt.day and opt.day.close:
+                    last_price = float(opt.day.close)
+
+                if last_price < 0.05:
+                    continue
+
+                expected_catch = abs(move_pct) * 0.8 * current_price * 0.025 * mult
+                predicted_sell = last_price + expected_catch
+                profit_pct = ((predicted_sell - last_price) / last_price) * 100
+
+                candidates.append({
+                    "Expiry": opt.details.expiration_date,
+                    "Strike": round(strike, 2),
+                    "Last Price": round(last_price, 2),
+                    "Profit %": round(profit_pct, 2),
+                    "OI": getattr(opt, 'open_interest', 0)
+                })
+
+                if profit_pct > profit_threshold:
+                    opportunities.append(candidates[-1])
+
+        # Show results
+        if candidates:
+            st.subheader("📊 All Candidate LEAPs (Sorted by Profit %)")
+            df = pd.DataFrame(candidates)
+            df = df.sort_values(by="Profit %", ascending=False)
+            st.dataframe(df.head(30), use_container_width=True)
+
+        st.success(f"**{len(opportunities)} opportunities** found above {profit_threshold}%")
+
+        return opportunities[:5]
 
     except Exception as e:
         st.error(f"Error: {str(e)}")
@@ -146,7 +189,7 @@ for ticker in st.session_state.tickers:
     st.subheader(f"📌 {ticker}")
     
     if st.button(f"🔍 Scan {ticker}", key=f"scan_{ticker}"):
-        with st.spinner("Pulling data from Polygon..."):
+        with st.spinner("Fetching from Polygon.io..."):
             opps = analyze_leap_lag(
                 ticker, 
                 dummy_mode=(mode == "Dummy (Backtest)"),
@@ -159,18 +202,18 @@ for ticker in st.session_state.tickers:
     if ticker in st.session_state.opportunities:
         opps = st.session_state.opportunities[ticker]
         if opps:
-            st.success(f"**Opportunities for {ticker}**")
-            for opp in opps[:5]:
+            st.success(f"**Found Opportunities for {ticker}**")
+            for opp in opps:
                 with st.container(border=True):
                     c1, c2, c3 = st.columns(3)
                     with c1:
                         st.metric("Expiry", opp["Expiry"])
                         st.metric("Strike", f"${opp['Strike']}")
                     with c2:
-                        st.metric("Buy", f"${opp['Last Price']}")
+                        st.metric("Buy Target", f"${opp['Last Price']}")
                     with c3:
-                        st.metric("Profit", f"{opp['Profit %']}%", delta=f"{opp['Profit %']}%")
+                        st.metric("Est. Profit", f"{opp['Profit %']}%", delta=f"{opp['Profit %']}%")
         else:
             st.warning("No opportunities above threshold (check table above)")
 
-st.caption("Polygon.io is now fully connected — look at the big table!")
+st.caption("Your API key is hardcoded. Look for the big data table after scanning.")

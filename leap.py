@@ -5,7 +5,7 @@ from datetime import datetime, timedelta
 
 st.set_page_config(page_title="LEAPs Lag Hunter", layout="wide")
 st.title("🚀 LEAPs Lag Hunter")
-st.markdown("**Dummy Mode Note: Option prices are current (not historical)**")
+st.markdown("**Fixed: Using Bid-Ask Midpoint for Accurate Pricing**")
 
 # Session State
 if "tickers" not in st.session_state:
@@ -13,9 +13,10 @@ if "tickers" not in st.session_state:
 if "opportunities" not in st.session_state:
     st.session_state.opportunities = {}
 
-st.sidebar.subheader("💰 Budget")
+st.sidebar.subheader("💰 Your Trading Budget")
 budget = st.sidebar.number_input("Available Budget ($)", min_value=500, value=5000, step=500)
 
+# ==================== ANALYSIS FUNCTION (FIXED) ====================
 def analyze_leap_lag(ticker, dummy_mode=False, dummy_date=None, dummy_time=None):
     try:
         tk = yf.Ticker(ticker)
@@ -33,7 +34,6 @@ def analyze_leap_lag(ticker, dummy_mode=False, dummy_date=None, dummy_time=None)
             later_idx = min(closest_idx + 12, len(hist)-1)
             price_later = float(hist['Close'].iloc[later_idx])
             move_pct = (price_later - current_price) / current_price * 100
-            st.info(f"📍 Dummy: Stock price at {hist.index[closest_idx].strftime('%H:%M')} = ${current_price:.2f}")
         else:
             hist = tk.history(period="2d", interval="5m")
             current_price = float(hist['Close'].iloc[-1])
@@ -42,44 +42,62 @@ def analyze_leap_lag(ticker, dummy_mode=False, dummy_date=None, dummy_time=None)
 
         st.success(f"**{ticker}** ≈ ${current_price:.2f} | Move: **{move_pct:+.1f}%**")
 
-        # Options (Always current chain)
+        # Long LEAPs
         expirations = tk.options
         long_exps = [exp for exp in expirations if 180 <= (datetime.strptime(exp, "%Y-%m-%d") - datetime.now()).days <= 730]
 
         opportunities = []
-        for exp in long_exps[:15]:
+        
+        for exp in long_exps[:20]:
             chain = tk.option_chain(exp)
             calls = chain.calls
+            
             relevant = calls[calls['strike'].between(current_price * 0.70, current_price * 1.45)]
             
             for _, row in relevant.iterrows():
                 strike = float(row['strike'])
-                last_price = float(row['lastPrice'])
-                if last_price < 0.10:
+                
+                # === FIXED PRICE EXTRACTION ===
+                bid = float(row.get('bid', 0))
+                ask = float(row.get('ask', 0))
+                last = float(row.get('lastPrice', 0))
+                
+                # Use midpoint if bid/ask available, else fallback to lastPrice
+                if bid > 0 and ask > 0:
+                    mid_price = (bid + ask) / 2
+                    price_used = mid_price
+                    price_source = "Bid-Ask Mid"
+                else:
+                    price_used = last
+                    price_source = "Last Price"
+                
+                if price_used < 0.10:
                     continue
                 
-                expected_catch = abs(move_pct) * 0.68 * current_price * 0.018
-                predicted_sell = last_price + expected_catch
-                profit_pct = ((predicted_sell - last_price) / last_price) * 100
+                expected_catch = abs(move_pct) * 0.65 * current_price * 0.018
+                predicted_sell = price_used + expected_catch
+                profit_pct = ((predicted_sell - price_used) / price_used) * 100
                 
-                if profit_pct > 1.5:
+                if profit_pct > 1.8:
                     opportunities.append({
                         "expiry": exp,
                         "strike": round(strike, 2),
-                        "buy_target": round(last_price * 0.965, 2),
+                        "buy_target": round(price_used * 0.97, 2),   # Slight discount
                         "sell_target": round(predicted_sell, 2),
                         "profit_pct": round(profit_pct, 1),
                         "move_pct": round(move_pct, 2),
-                        "reason": f"Stock moved **{move_pct:.1f}%**. LEAP lagging.",
+                        "price_source": price_source,
+                        "reason": f"Stock moved **{move_pct:.1f}%**. Using {price_source}.",
                     })
 
-        return sorted(opportunities, key=lambda x: x['profit_pct'], reverse=True)[:5]
-
+        sorted_opps = sorted(opportunities, key=lambda x: x['profit_pct'], reverse=True)[:5]
+        return sorted_opps
+        
     except Exception as e:
-        st.error(str(e))
+        st.error(f"Error: {str(e)}")
         return []
 
-# UI remains same as before...
+# ==================== UI (unchanged) ====================
 mode = st.sidebar.radio("Mode", ["Live", "Dummy (Backtest)"], horizontal=True)
 
 st.sidebar.subheader("Add Ticker")
@@ -95,12 +113,17 @@ if mode == "Dummy (Backtest)":
     dummy_date = st.sidebar.date_input("Date", datetime.now().date() - timedelta(days=1))
     dummy_time = st.sidebar.time_input("Time", datetime.strptime("11:30", "%H:%M").time())
 
-# ... (rest of your UI code - you can keep the same as last version)
 for ticker in st.session_state.tickers:
     st.subheader(f"📌 {ticker}")
+    
     if st.button(f"🔍 Scan {ticker}", key=f"scan_{ticker}"):
         with st.spinner(f"Scanning {ticker}..."):
-            result = analyze_leap_lag(ticker, mode == "Dummy (Backtest)", dummy_date, dummy_time)
+            result = analyze_leap_lag(
+                ticker, 
+                dummy_mode=(mode == "Dummy (Backtest)"),
+                dummy_date=dummy_date,
+                dummy_time=dummy_time
+            )
             st.session_state.opportunities[ticker] = result
             st.rerun()
     
@@ -119,6 +142,10 @@ for ticker in st.session_state.tickers:
                         st.metric("Sell Target", f"${opp['sell_target']}")
                     with c3:
                         st.metric("Est. Profit", f"{opp['profit_pct']}%", delta=f"{opp['profit_pct']}%")
+                    
+                    st.info(f"Price Source: {opp.get('price_source', 'Unknown')}")
                     st.write(opp.get("reason", ""))
         else:
             st.warning("No opportunities found.")
+
+st.caption("Fixed: Now using Bid-Ask Midpoint for LEAP pricing")

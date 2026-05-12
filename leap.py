@@ -5,18 +5,18 @@ from datetime import datetime, timedelta
 
 st.set_page_config(page_title="LEAPs Lag Hunter", layout="wide")
 st.title("🚀 LEAPs Lag Hunter")
-st.markdown("**Fixed: Using Bid-Ask Midpoint for Accurate Pricing**")
+st.markdown("**Realistic Mode: Using Ask for Buy & Bid for Sell**")
 
 # Session State
 if "tickers" not in st.session_state:
-    st.session_state.tickers = ["SOXL"]
+    st.session_state.tickers = ["SOXL", "URA"]
 if "opportunities" not in st.session_state:
     st.session_state.opportunities = {}
 
 st.sidebar.subheader("💰 Your Trading Budget")
 budget = st.sidebar.number_input("Available Budget ($)", min_value=500, value=5000, step=500)
 
-# ==================== ANALYSIS FUNCTION (FIXED) ====================
+# ==================== ANALYSIS FUNCTION ====================
 def analyze_leap_lag(ticker, dummy_mode=False, dummy_date=None, dummy_time=None):
     try:
         tk = yf.Ticker(ticker)
@@ -24,8 +24,7 @@ def analyze_leap_lag(ticker, dummy_mode=False, dummy_date=None, dummy_time=None)
         # Stock Move
         if dummy_mode and dummy_date and dummy_time:
             target_dt = datetime.combine(dummy_date, dummy_time)
-            hist = tk.history(start=target_dt - timedelta(days=10), 
-                            end=target_dt + timedelta(days=3), interval="5m")
+            hist = tk.history(start=target_dt - timedelta(days=10), end=target_dt + timedelta(days=3), interval="5m")
             if hist.empty:
                 return []
             hist.index = hist.index.tz_localize(None)
@@ -42,7 +41,6 @@ def analyze_leap_lag(ticker, dummy_mode=False, dummy_date=None, dummy_time=None)
 
         st.success(f"**{ticker}** ≈ ${current_price:.2f} | Move: **{move_pct:+.1f}%**")
 
-        # Long LEAPs
         expirations = tk.options
         long_exps = [exp for exp in expirations if 180 <= (datetime.strptime(exp, "%Y-%m-%d") - datetime.now()).days <= 730]
 
@@ -51,53 +49,47 @@ def analyze_leap_lag(ticker, dummy_mode=False, dummy_date=None, dummy_time=None)
         for exp in long_exps[:20]:
             chain = tk.option_chain(exp)
             calls = chain.calls
-            
             relevant = calls[calls['strike'].between(current_price * 0.70, current_price * 1.45)]
             
             for _, row in relevant.iterrows():
                 strike = float(row['strike'])
                 
-                # === FIXED PRICE EXTRACTION ===
                 bid = float(row.get('bid', 0))
                 ask = float(row.get('ask', 0))
                 last = float(row.get('lastPrice', 0))
                 
-                # Use midpoint if bid/ask available, else fallback to lastPrice
-                if bid > 0 and ask > 0:
-                    mid_price = (bid + ask) / 2
-                    price_used = mid_price
-                    price_source = "Bid-Ask Mid"
-                else:
-                    price_used = last
-                    price_source = "Last Price"
+                # Realistic pricing
+                buy_price = ask if ask > 0 else last * 1.02   # Pay Ask or slight premium
+                sell_price_estimate = bid if bid > 0 else last * 0.98  # Sell at Bid or slight discount
                 
-                if price_used < 0.10:
+                if buy_price < 0.15 or buy_price > 200:   # Filter unrealistic prices
                     continue
                 
-                expected_catch = abs(move_pct) * 0.65 * current_price * 0.018
-                predicted_sell = price_used + expected_catch
-                profit_pct = ((predicted_sell - price_used) / price_used) * 100
+                expected_catch = abs(move_pct) * 0.60 * current_price * 0.017   # More conservative
+                predicted_sell = sell_price_estimate + expected_catch
                 
-                if profit_pct > 1.8:
+                profit_pct = ((predicted_sell - buy_price) / buy_price) * 100
+                
+                if profit_pct > 2.0:   # Higher threshold due to spread
                     opportunities.append({
                         "expiry": exp,
                         "strike": round(strike, 2),
-                        "buy_target": round(price_used * 0.97, 2),   # Slight discount
+                        "buy_target": round(buy_price, 2),        # What you actually pay
                         "sell_target": round(predicted_sell, 2),
                         "profit_pct": round(profit_pct, 1),
                         "move_pct": round(move_pct, 2),
-                        "price_source": price_source,
-                        "reason": f"Stock moved **{move_pct:.1f}%**. Using {price_source}.",
+                        "bid": round(bid, 2),
+                        "ask": round(ask, 2),
+                        "reason": f"Stock moved **{move_pct:.1f}%**. Using realistic Bid/Ask.",
                     })
 
-        sorted_opps = sorted(opportunities, key=lambda x: x['profit_pct'], reverse=True)[:5]
-        return sorted_opps
+        return sorted(opportunities, key=lambda x: x['profit_pct'], reverse=True)[:5]
         
     except Exception as e:
-        st.error(f"Error: {str(e)}")
+        st.error(f"Error with {ticker}: {str(e)}")
         return []
 
-# ==================== UI (unchanged) ====================
+# ==================== UI ====================
 mode = st.sidebar.radio("Mode", ["Live", "Dummy (Backtest)"], horizontal=True)
 
 st.sidebar.subheader("Add Ticker")
@@ -130,7 +122,7 @@ for ticker in st.session_state.tickers:
     if ticker in st.session_state.opportunities:
         opps = st.session_state.opportunities[ticker]
         if opps:
-            st.success(f"**Top Opportunities for {ticker}**")
+            st.success(f"**Top 5 Opportunities for {ticker}**")
             for opp in opps:
                 with st.container(border=True):
                     c1, c2, c3 = st.columns(3)
@@ -138,14 +130,36 @@ for ticker in st.session_state.tickers:
                         st.metric("Expiry", opp["expiry"])
                         st.metric("Strike", f"${opp['strike']}")
                     with c2:
-                        st.metric("Buy Target", f"${opp['buy_target']}")
-                        st.metric("Sell Target", f"${opp['sell_target']}")
+                        st.metric("Buy Target (Ask)", f"${opp['buy_target']}")
+                        st.metric("Sell Target (Bid+)", f"${opp['sell_target']}")
                     with c3:
                         st.metric("Est. Profit", f"{opp['profit_pct']}%", delta=f"{opp['profit_pct']}%")
                     
-                    st.info(f"Price Source: {opp.get('price_source', 'Unknown')}")
-                    st.write(opp.get("reason", ""))
+                    st.caption(f"Bid: ${opp['bid']} | Ask: ${opp['ask']}")
+                    st.write(opp["reason"])
         else:
-            st.warning("No opportunities found.")
+            st.warning("No opportunities with realistic spread found.")
 
-st.caption("Fixed: Now using Bid-Ask Midpoint for LEAP pricing")
+    # Best for Budget (unchanged logic)
+    if ticker in st.session_state.opportunities and st.session_state.opportunities[ticker]:
+        best = max(st.session_state.opportunities[ticker], 
+                   key=lambda x: (budget // (x['buy_target'] * 100)) * (x['sell_target'] - x['buy_target']) * 100)
+        
+        option_cost = best['buy_target'] * 100
+        max_contracts = int(budget // option_cost)
+        
+        st.subheader(f"💎 Best for Your ${budget:,.0f} Budget")
+        with st.container(border=True):
+            st.success(f"**Recommended: {ticker} {best['expiry']} ${best['strike']} Call**")
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                st.metric("Contracts", max_contracts)
+                st.metric("Total Cost", f"${max_contracts * option_cost:,.0f}")
+            with col2:
+                st.metric("Buy @ Ask", f"${best['buy_target']:.2f}")
+                st.metric("Target Sell", f"${best['sell_target']:.2f}")
+            with col3:
+                est_profit = max_contracts * (best['sell_target'] - best['buy_target']) * 100
+                st.metric("Expected Profit", f"${est_profit:,.0f}", delta=f"{best['profit_pct']}%")
+
+st.caption("Realistic Mode: Buy at Ask • Sell at Bid • Conservative Profit")

@@ -1,16 +1,11 @@
 import streamlit as st
+import yfinance as yf
 import pandas as pd
 from datetime import datetime, timedelta
-from polygon import RESTClient
-import os
 
 st.set_page_config(page_title="LEAPs Lag Hunter", layout="wide")
-st.title("🚀 LEAPs Lag Hunter - FINAL DIAGNOSTIC")
-st.markdown("**Your API Key is now hardcoded**")
-
-# ==================== HARD CODED API KEY ====================
-POLYGON_API_KEY = "uAtvNOthTdL4_e14lb70lFm7EGZhjvqQ"
-client = RESTClient(api_key=POLYGON_API_KEY)
+st.title("🚀 LEAPs Lag Hunter")
+st.markdown("**Very Sensitive Mode • Top 5 Opportunities with Reasoning**")
 
 # Session State
 if "tickers" not in st.session_state:
@@ -18,155 +13,82 @@ if "tickers" not in st.session_state:
 if "opportunities" not in st.session_state:
     st.session_state.opportunities = {}
 
-# Sidebar
-st.sidebar.subheader("💰 Budget")
+# Budget
+st.sidebar.subheader("💰 Your Trading Budget")
 budget = st.sidebar.number_input("Available Budget ($)", min_value=500, value=5000, step=500)
 
-st.sidebar.subheader("⚙️ Settings")
-profit_threshold = st.sidebar.slider("Min Profit % Threshold", 0.01, 5.0, 0.3, 0.05)
-use_fallback = st.sidebar.checkbox("Use Fallback Method", value=True)
-aggressive = st.sidebar.checkbox("Aggressive Mode (Bigger Expected Catch)", value=True)
-
+# ==================== ANALYSIS FUNCTION ====================
 def analyze_leap_lag(ticker, dummy_mode=False, dummy_date=None, dummy_time=None):
     try:
-        st.subheader(f"🔍 Analyzing {ticker}")
-
-        # === STOCK DATA ===
+        tk = yf.Ticker(ticker)
+        
+        # Stock price & move
         if dummy_mode and dummy_date and dummy_time:
             target_dt = datetime.combine(dummy_date, dummy_time)
-            from_date = (target_dt - timedelta(days=7)).date()
-            to_date = (target_dt + timedelta(days=2)).date()
-            aggs = list(client.list_aggs(ticker, 5, "minute", from_=from_date, to=to_date, limit=50000))
-        else:
-            from_date = (datetime.now() - timedelta(days=2)).date()
-            to_date = datetime.now().date()
-            aggs = list(client.list_aggs(ticker, 5, "minute", from_=from_date, to=to_date, limit=50000))
-
-        if len(aggs) < 5:
-            st.error("❌ Not enough stock data")
-            return []
-
-        df = pd.DataFrame([{'timestamp': pd.to_datetime(a.timestamp, unit='ms'), 'close': a.close} for a in aggs])
-        df.set_index('timestamp', inplace=True)
-
-        if dummy_mode:
-            time_diffs = (df.index - target_dt).map(abs)
+            hist = tk.history(start=target_dt - timedelta(days=7), 
+                            end=target_dt + timedelta(days=2), 
+                            interval="5m")
+            if hist.empty:
+                st.warning(f"No historical data for {ticker}")
+                return []
+            hist.index = hist.index.tz_localize(None)
+            time_diffs = (hist.index - target_dt).map(abs)
             closest_idx = time_diffs.argmin()
-            current_price = float(df['close'].iloc[closest_idx])
-            later_idx = min(closest_idx + 12, len(df)-1)
-            price_later = float(df['close'].iloc[later_idx])
+            current_price = float(hist['Close'].iloc[closest_idx])
+            later_idx = min(closest_idx + 12, len(hist)-1)
+            price_later = float(hist['Close'].iloc[later_idx])
             move_pct = (price_later - current_price) / current_price * 100
         else:
-            current_price = float(df['close'].iloc[-1])
-            price_ago = float(df['close'].iloc[-13] if len(df) >= 13 else df['close'].iloc[0])
+            hist = tk.history(period="2d", interval="5m")
+            if len(hist) < 10:
+                st.warning(f"Not enough data for {ticker}")
+                return []
+            current_price = float(hist['Close'].iloc[-1])
+            price_ago = float(hist['Close'].iloc[-13] if len(hist) >= 13 else hist['Close'].iloc[0])
             move_pct = (current_price - price_ago) / price_ago * 100
 
-        st.success(f"✅ Polygon Stock Price: **${current_price:.2f}** | Move: **{move_pct:+.1f}%**")
+        st.info(f"📊 {ticker} ≈ ${current_price:.2f} | Move: {move_pct:.1f}%")
 
-        # === OPTIONS DATA ===
-        today = datetime.now().date()
-        candidates = []
+        # Long-dated LEAPs
+        expirations = tk.options
+        long_exps = [exp for exp in expirations if 180 <= (datetime.strptime(exp, "%Y-%m-%d") - datetime.now()).days <= 730]
+
         opportunities = []
-
-        mult = 5.0 if aggressive else 1.0
-
-        # Try Snapshot Chain first
-        try:
-            params = {
-                "expiration_date.gte": (today + timedelta(days=100)).strftime("%Y-%m-%d"),
-                "contract_type": "call",
-            }
-            chain = list(client.list_snapshot_options_chain(ticker, params=params))
-            st.info(f"✅ Snapshot Chain: {len(chain)} LEAPs found")
-        except:
-            chain = []
-            st.warning("Snapshot failed, trying fallback...")
-
-        if len(chain) == 0 and use_fallback:
-            # Fallback method
-            contracts = list(client.list_options_contracts(
-                underlying_ticker=ticker,
-                expiration_date_gte=(today + timedelta(days=100)).strftime("%Y-%m-%d"),
-                contract_type="call",
-                limit=1000
-            ))
-            st.info(f"✅ Fallback found {len(contracts)} contracts")
-
-            for contract in contracts[:300]:   # Limit requests
-                try:
-                    snap = client.get_snapshot_option(contract.ticker)
-                    last_price = 0.0
-                    if hasattr(snap, 'last_trade') and snap.last_trade and snap.last_trade.price:
-                        last_price = float(snap.last_trade.price)
-                    elif hasattr(snap, 'day') and snap.day and snap.day.close:
-                        last_price = float(snap.day.close)
-
-                    strike = float(contract.strike_price)
-                    if not (current_price * 0.7 <= strike <= current_price * 1.5):
-                        continue
-                    if last_price < 0.05:
-                        continue
-
-                    expected_catch = abs(move_pct) * 0.8 * current_price * 0.025 * mult
-                    predicted_sell = last_price + expected_catch
-                    profit_pct = ((predicted_sell - last_price) / last_price) * 100
-
-                    candidates.append({
-                        "Expiry": contract.expiration_date,
-                        "Strike": round(strike, 2),
-                        "Last Price": round(last_price, 2),
-                        "Profit %": round(profit_pct, 2),
-                        "OI": getattr(snap, 'open_interest', 0)
-                    })
-
-                    if profit_pct > profit_threshold:
-                        opportunities.append(candidates[-1])
-                except:
+        
+        for exp in long_exps[:20]:
+            chain = tk.option_chain(exp)
+            calls = chain.calls
+            relevant = calls[calls['strike'].between(current_price * 0.75, current_price * 1.40)]
+            
+            for _, row in relevant.iterrows():
+                strike = float(row['strike'])
+                last_price = float(row['lastPrice'])
+                if last_price < 0.10:
                     continue
-        else:
-            # Use snapshot chain
-            for opt in chain:
-                strike = float(opt.details.strike_price)
-                if not (current_price * 0.7 <= strike <= current_price * 1.5):
-                    continue
-
-                last_price = 0.0
-                if hasattr(opt, 'last_trade') and opt.last_trade and opt.last_trade.price:
-                    last_price = float(opt.last_trade.price)
-                elif hasattr(opt, 'day') and opt.day and opt.day.close:
-                    last_price = float(opt.day.close)
-
-                if last_price < 0.05:
-                    continue
-
-                expected_catch = abs(move_pct) * 0.8 * current_price * 0.025 * mult
+                
+                expected_catch = abs(move_pct) * 0.7 * (current_price * 0.015)
                 predicted_sell = last_price + expected_catch
-                profit_pct = ((predicted_sell - last_price) / last_price) * 100
-
-                candidates.append({
-                    "Expiry": opt.details.expiration_date,
-                    "Strike": round(strike, 2),
-                    "Last Price": round(last_price, 2),
-                    "Profit %": round(profit_pct, 2),
-                    "OI": getattr(opt, 'open_interest', 0)
-                })
-
-                if profit_pct > profit_threshold:
-                    opportunities.append(candidates[-1])
-
-        # Show results
-        if candidates:
-            st.subheader("📊 All Candidate LEAPs (Sorted by Profit %)")
-            df = pd.DataFrame(candidates)
-            df = df.sort_values(by="Profit %", ascending=False)
-            st.dataframe(df.head(30), use_container_width=True)
-
-        st.success(f"**{len(opportunities)} opportunities** found above {profit_threshold}%")
-
-        return opportunities[:5]
-
+                profit_pct = ((predicted_sell - last_price) / last_price) * 100 if last_price > 0 else 0
+                
+                if profit_pct > 1.5:   # Lowered threshold a bit
+                    opportunities.append({
+                        "expiry": exp,
+                        "strike": round(strike, 2),
+                        "buy_target": round(last_price * 0.96, 2),
+                        "sell_target": round(predicted_sell, 2),
+                        "profit_pct": round(profit_pct, 1),
+                        "move_pct": round(move_pct, 2),
+                        "reason": f"Stock moved **{move_pct:.1f}%** recently. Long-dated option lagging.",
+                        "target_reason": "Buy near current market expecting quick catch-up.",
+                        "profit_reason": "Momentum estimate."
+                    })
+        
+        sorted_opps = sorted(opportunities, key=lambda x: x['profit_pct'], reverse=True)[:5]
+        st.info(f"✅ Found {len(sorted_opps)} opportunities for {ticker}")
+        return sorted_opps
+        
     except Exception as e:
-        st.error(f"Error: {str(e)}")
+        st.error(f"Error with {ticker}: {str(e)}")
         return []
 
 # ==================== UI ====================
@@ -189,31 +111,60 @@ for ticker in st.session_state.tickers:
     st.subheader(f"📌 {ticker}")
     
     if st.button(f"🔍 Scan {ticker}", key=f"scan_{ticker}"):
-        with st.spinner("Fetching from Polygon.io..."):
-            opps = analyze_leap_lag(
+        with st.spinner(f"Scanning {ticker}..."):
+            result = analyze_leap_lag(
                 ticker, 
                 dummy_mode=(mode == "Dummy (Backtest)"),
                 dummy_date=dummy_date,
                 dummy_time=dummy_time
             )
-            st.session_state.opportunities[ticker] = opps
+            st.session_state.opportunities[ticker] = result
             st.rerun()
     
     if ticker in st.session_state.opportunities:
         opps = st.session_state.opportunities[ticker]
         if opps:
-            st.success(f"**Found Opportunities for {ticker}**")
+            st.success(f"**Top 5 Opportunities for {ticker}**")
             for opp in opps:
                 with st.container(border=True):
                     c1, c2, c3 = st.columns(3)
                     with c1:
-                        st.metric("Expiry", opp["Expiry"])
-                        st.metric("Strike", f"${opp['Strike']}")
+                        st.metric("Expiry", opp["expiry"])
+                        st.metric("Strike", f"${opp['strike']}")
                     with c2:
-                        st.metric("Buy Target", f"${opp['Last Price']}")
+                        st.metric("Buy Target", f"${opp['buy_target']}")
+                        st.metric("Sell Target", f"${opp['sell_target']}")
                     with c3:
-                        st.metric("Est. Profit", f"{opp['Profit %']}%", delta=f"{opp['Profit %']}%")
+                        st.metric("Est. Profit", f"{opp['profit_pct']}%", delta=f"{opp['profit_pct']}%")
+                    
+                    st.markdown("**Why this opportunity?**")
+                    st.write(opp["reason"])
+                    st.write(opp["target_reason"])
+                    st.write(opp["profit_reason"])
         else:
-            st.warning("No opportunities above threshold (check table above)")
+            st.warning("No opportunities > 1.5% found.")
 
-st.caption("Your API key is hardcoded. Look for the big data table after scanning.")
+    # Best for Budget
+    if ticker in st.session_state.opportunities and st.session_state.opportunities[ticker]:
+        best = max(st.session_state.opportunities[ticker], 
+                   key=lambda x: (budget // (x['buy_target'] * 100)) * (x['sell_target'] - x['buy_target']) * 100)
+        
+        option_cost = best['buy_target'] * 100
+        max_contracts = int(budget // option_cost)
+        
+        st.subheader(f"💎 Best Opportunity for Your ${budget:,.0f} Budget")
+        with st.container(border=True):
+            st.success(f"**Recommended: {ticker} {best['expiry']} ${best['strike']} Call**")
+            
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                st.metric("Contracts You Can Buy", max_contracts)
+                st.metric("Total Investment", f"${max_contracts * option_cost:,.0f}")
+            with col2:
+                st.metric("Buy Target", f"${best['buy_target']:.2f}")
+                st.metric("Target Sell", f"${best['sell_target']:.2f}")
+            with col3:
+                est_profit = max_contracts * (best['sell_target'] - best['buy_target']) * 100
+                st.metric("Expected Profit Today", f"${est_profit:,.0f}", delta=f"{best['profit_pct']}%")
+
+st.caption("LEAPs Lag Hunter • Back to yfinance • Works more reliably for LEAPs")

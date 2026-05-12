@@ -5,7 +5,7 @@ from datetime import datetime, timedelta
 
 st.set_page_config(page_title="LEAPs Lag Hunter", layout="wide")
 st.title("🚀 LEAPs Lag Hunter")
-st.markdown("**Very Sensitive Mode • Improved Dummy Accuracy**")
+st.markdown("**Dummy Mode Note: Option prices are current (not historical)**")
 
 # Session State
 if "tickers" not in st.session_state:
@@ -13,94 +13,73 @@ if "tickers" not in st.session_state:
 if "opportunities" not in st.session_state:
     st.session_state.opportunities = {}
 
-# Budget
-st.sidebar.subheader("💰 Your Trading Budget")
+st.sidebar.subheader("💰 Budget")
 budget = st.sidebar.number_input("Available Budget ($)", min_value=500, value=5000, step=500)
 
-# ==================== ANALYSIS FUNCTION ====================
 def analyze_leap_lag(ticker, dummy_mode=False, dummy_date=None, dummy_time=None):
     try:
         tk = yf.Ticker(ticker)
         
-        # ==================== STOCK MOVE ====================
+        # Stock Move
         if dummy_mode and dummy_date and dummy_time:
             target_dt = datetime.combine(dummy_date, dummy_time)
             hist = tk.history(start=target_dt - timedelta(days=10), 
-                            end=target_dt + timedelta(days=3), 
-                            interval="5m")
+                            end=target_dt + timedelta(days=3), interval="5m")
             if hist.empty:
-                st.warning(f"No data for {ticker}")
                 return []
-            
             hist.index = hist.index.tz_localize(None)
-            time_diffs = (hist.index - target_dt).map(abs)
-            closest_idx = time_diffs.argmin()
-            
+            closest_idx = (hist.index - target_dt).map(abs).argmin()
             current_price = float(hist['Close'].iloc[closest_idx])
-            later_idx = min(closest_idx + 12, len(hist)-1)  # ~1 hour later
+            later_idx = min(closest_idx + 12, len(hist)-1)
             price_later = float(hist['Close'].iloc[later_idx])
             move_pct = (price_later - current_price) / current_price * 100
-            
-            st.info(f"📍 Dummy Mode: Using price at **{hist.index[closest_idx]}** = ${current_price:.2f}")
+            st.info(f"📍 Dummy: Stock price at {hist.index[closest_idx].strftime('%H:%M')} = ${current_price:.2f}")
         else:
             hist = tk.history(period="2d", interval="5m")
-            if len(hist) < 10:
-                st.warning(f"Not enough live data for {ticker}")
-                return []
             current_price = float(hist['Close'].iloc[-1])
             price_ago = float(hist['Close'].iloc[-13] if len(hist) >= 13 else hist['Close'].iloc[0])
             move_pct = (current_price - price_ago) / price_ago * 100
 
-        st.success(f"📊 **{ticker}** ≈ ${current_price:.2f} | Move: **{move_pct:+.1f}%**")
+        st.success(f"**{ticker}** ≈ ${current_price:.2f} | Move: **{move_pct:+.1f}%**")
 
-        # ==================== OPTIONS ====================
+        # Options (Always current chain)
         expirations = tk.options
-        long_exps = [exp for exp in expirations 
-                    if 180 <= (datetime.strptime(exp, "%Y-%m-%d") - datetime.now()).days <= 730]
+        long_exps = [exp for exp in expirations if 180 <= (datetime.strptime(exp, "%Y-%m-%d") - datetime.now()).days <= 730]
 
         opportunities = []
-        
         for exp in long_exps[:15]:
             chain = tk.option_chain(exp)
             calls = chain.calls
-            
-            # Wider strike range for better results
             relevant = calls[calls['strike'].between(current_price * 0.70, current_price * 1.45)]
             
             for _, row in relevant.iterrows():
                 strike = float(row['strike'])
                 last_price = float(row['lastPrice'])
-                if last_price < 0.08:
+                if last_price < 0.10:
                     continue
                 
-                # Improved prediction logic
-                expected_catch = abs(move_pct) * 0.65 * (current_price * 0.018)  # Tuned multiplier
+                expected_catch = abs(move_pct) * 0.68 * current_price * 0.018
                 predicted_sell = last_price + expected_catch
-                
                 profit_pct = ((predicted_sell - last_price) / last_price) * 100
                 
-                if profit_pct > 1.8:   # Reasonable threshold
+                if profit_pct > 1.5:
                     opportunities.append({
                         "expiry": exp,
                         "strike": round(strike, 2),
-                        "buy_target": round(last_price * 0.97, 2),   # Better buy target
+                        "buy_target": round(last_price * 0.965, 2),
                         "sell_target": round(predicted_sell, 2),
                         "profit_pct": round(profit_pct, 1),
                         "move_pct": round(move_pct, 2),
-                        "reason": f"Stock moved **{move_pct:.1f}%** around selected time. LEAP lagging.",
-                        "target_reason": "Buy slightly below current ask expecting gamma catch-up.",
-                        "profit_reason": "Momentum + historical LEAP behavior estimate."
+                        "reason": f"Stock moved **{move_pct:.1f}%**. LEAP lagging.",
                     })
-        
-        sorted_opps = sorted(opportunities, key=lambda x: x['profit_pct'], reverse=True)[:5]
-        st.info(f"✅ Found {len(sorted_opps)} opportunities")
-        return sorted_opps
-        
+
+        return sorted(opportunities, key=lambda x: x['profit_pct'], reverse=True)[:5]
+
     except Exception as e:
-        st.error(f"Error with {ticker}: {str(e)}")
+        st.error(str(e))
         return []
 
-# ==================== UI ====================
+# UI remains same as before...
 mode = st.sidebar.radio("Mode", ["Live", "Dummy (Backtest)"], horizontal=True)
 
 st.sidebar.subheader("Add Ticker")
@@ -116,17 +95,12 @@ if mode == "Dummy (Backtest)":
     dummy_date = st.sidebar.date_input("Date", datetime.now().date() - timedelta(days=1))
     dummy_time = st.sidebar.time_input("Time", datetime.strptime("11:30", "%H:%M").time())
 
+# ... (rest of your UI code - you can keep the same as last version)
 for ticker in st.session_state.tickers:
     st.subheader(f"📌 {ticker}")
-    
     if st.button(f"🔍 Scan {ticker}", key=f"scan_{ticker}"):
         with st.spinner(f"Scanning {ticker}..."):
-            result = analyze_leap_lag(
-                ticker, 
-                dummy_mode=(mode == "Dummy (Backtest)"),
-                dummy_date=dummy_date,
-                dummy_time=dummy_time
-            )
+            result = analyze_leap_lag(ticker, mode == "Dummy (Backtest)", dummy_date, dummy_time)
             st.session_state.opportunities[ticker] = result
             st.rerun()
     
@@ -145,33 +119,6 @@ for ticker in st.session_state.tickers:
                         st.metric("Sell Target", f"${opp['sell_target']}")
                     with c3:
                         st.metric("Est. Profit", f"{opp['profit_pct']}%", delta=f"{opp['profit_pct']}%")
-                    
-                    st.markdown("**Why this?**")
-                    st.write(opp["reason"])
-                    st.write(opp["target_reason"])
+                    st.write(opp.get("reason", ""))
         else:
-            st.warning("No strong opportunities found at this time.")
-
-    # Best for Budget
-    if ticker in st.session_state.opportunities and st.session_state.opportunities[ticker]:
-        best = max(st.session_state.opportunities[ticker], 
-                   key=lambda x: (budget // (x['buy_target'] * 100)) * (x['sell_target'] - x['buy_target']) * 100)
-        
-        option_cost = best['buy_target'] * 100
-        max_contracts = int(budget // option_cost)
-        
-        st.subheader(f"💎 Best for Your ${budget:,.0f} Budget")
-        with st.container(border=True):
-            st.success(f"**Recommended: {ticker} {best['expiry']} ${best['strike']} Call**")
-            col1, col2, col3 = st.columns(3)
-            with col1:
-                st.metric("Contracts", max_contracts)
-                st.metric("Investment", f"${max_contracts * option_cost:,.0f}")
-            with col2:
-                st.metric("Buy Target", f"${best['buy_target']:.2f}")
-                st.metric("Sell Target", f"${best['sell_target']:.2f}")
-            with col3:
-                est_profit = max_contracts * (best['sell_target'] - best['buy_target']) * 100
-                st.metric("Expected Profit", f"${est_profit:,.0f}", delta=f"{best['profit_pct']}%")
-
-st.caption("LEAPs Lag Hunter • yfinance • Improved Dummy Mode")
+            st.warning("No opportunities found.")

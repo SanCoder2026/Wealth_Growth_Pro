@@ -258,6 +258,16 @@ cash_balance = float(data["cash_balance"])
 open_options = data["open_options"]
 alloc_settings = data.get("alloc_settings", {})
 
+
+def persist():
+    """Save current in-memory state. Defined early so any section can call it."""
+    save_version(username, {
+        "etfs": etfs, "history": history, "initial_capital": initial_capital,
+        "capital_additions": capital_additions, "option_trades": option_trades,
+        "cash_balance": cash_balance, "open_options": open_options,
+        "alloc_settings": alloc_settings,
+    })
+
 # Current margin = last recorded margin_debt
 margin = 0.0
 for h in reversed(history):
@@ -704,14 +714,6 @@ with cc[1]:
 # ===========================================================================
 # SIDEBAR — all management tools (declutters main view)
 # ===========================================================================
-def persist():
-    save_version(username, {
-        "etfs": etfs, "history": history, "initial_capital": initial_capital,
-        "capital_additions": capital_additions, "option_trades": option_trades,
-        "cash_balance": cash_balance, "open_options": open_options,
-        "alloc_settings": alloc_settings,
-    })
-
 sb = st.sidebar
 sb.header(f"⚙️ Manage · {username}")
 

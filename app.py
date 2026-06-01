@@ -25,6 +25,7 @@ from strike_engine import (
     realized_vol_for, suggest_strike, prob_itm, call_delta,
     sds_otm, trend_strength_for, enrich_option_row,
 )
+import allocation_engine as ae
 
 # ---------------------------------------------------------------------------
 # Config
@@ -37,11 +38,14 @@ TARGET_ALLOCATIONS = {
     "URA": 0.10, "IBIT": 0.10, "COPX": 0.10,
 }
 
-# Per-ticker rough IV fallback if live vol fetch fails (annualized)
+# Per-ticker rough IV fallback if live vol fetch fails (annualized).
+# Used ONLY when the live volatility fetch fails; otherwise realized vol is used.
 VOL_FALLBACK = {
-    "SOXL": 0.70, "TQQQ": 0.55, "SLV": 0.25,
-    "URA": 0.35, "IBIT": 0.60, "COPX": 0.35,
+    "SOXL": 0.70, "TQQQ": 0.55, "SLV": 0.25, "URA": 0.35, "IBIT": 0.60,
+    "COPX": 0.35, "IAU": 0.15, "UPRO": 0.50, "UAMY": 0.80, "SNPS": 0.40,
+    "UVXY": 0.95, "SOXX": 0.30, "GLD": 0.15, "SPY": 0.18,
 }
+DEFAULT_VOL_FALLBACK = 0.45   # only for truly unknown tickers
 
 st.set_page_config(page_title="Wealth Growth", layout="wide",
                    page_icon="📈", initial_sidebar_state="expanded")
@@ -126,6 +130,9 @@ def _normalize(data):
     data.setdefault("option_trades", [])
     data.setdefault("history", [])
     data.setdefault("initial_capital", 0.0)
+    data.setdefault("alloc_settings", {       # regime rotation settings
+        "base_tech_share": 0.50, "max_tilt": 0.30, "max_weight": 0.30,
+    })
     for t, etf in data.get("etfs", {}).items():
         etf.setdefault("shares", 0.0)
         etf.setdefault("cost_basis", 0.0)
@@ -212,7 +219,7 @@ def get_vol(ticker):
     v = realized_vol_for(ticker)
     if v and v > 0:
         return v, "realized"
-    return VOL_FALLBACK.get(ticker, 0.45), "fallback"
+    return VOL_FALLBACK.get(ticker, DEFAULT_VOL_FALLBACK), "fallback"
 
 
 # ---------------------------------------------------------------------------
@@ -249,6 +256,7 @@ capital_additions = data["capital_additions"]
 option_trades = data["option_trades"]
 cash_balance = float(data["cash_balance"])
 open_options = data["open_options"]
+alloc_settings = data.get("alloc_settings", {})
 
 # Current margin = last recorded margin_debt
 margin = 0.0
@@ -427,6 +435,7 @@ if open_options:
     today = date.today()
     opt_rows = []
     high_risk = 0
+    below_basis = []
     for o in open_options:
         spot = prices.get(o["ticker"], 0)
         try:
@@ -441,6 +450,17 @@ if open_options:
         moneyness = ("ITM" if spot > strike else "OTM" if spot < strike else "ATM") if spot else "—"
         if p is not None and p > 0.50:
             high_risk += 1
+
+        # Cost-basis check: would assignment sell shares below what you paid?
+        basis = float(etfs.get(o["ticker"], {}).get("cost_basis", 0))
+        vs_basis = "—"
+        if basis > 0 and strike > 0:
+            if strike < basis:
+                vs_basis = f"⚠️ -{(1-strike/basis)*100:.0f}%"
+                below_basis.append(f"{o['ticker']} (${strike:.0f} strike vs ${basis:.2f} cost)")
+            else:
+                vs_basis = f"+{(strike/basis-1)*100:.0f}%"
+
         opt_rows.append({
             "Ticker": o["ticker"],
             "Contracts": o["contracts"],
@@ -450,14 +470,20 @@ if open_options:
             "Moneyness": moneyness,
             "Assign Prob": f"{p*100:.0f}%" if p is not None else "—",
             "Delta": f"{dlt:.2f}" if dlt is not None else "—",
+            "Strike vs Cost": vs_basis,
             "Premium": f"${o.get('premium_per',0):.2f}",
         })
     st.dataframe(pd.DataFrame(opt_rows), use_container_width=True, hide_index=True)
     if high_risk:
         st.warning(f"⚠️ {high_risk} position(s) have >50% assignment probability — "
                    f"consider rolling if you want to keep the shares.")
-    st.caption("Assign Prob & Delta computed from each ticker's realized volatility. "
-               "Delta should be close to what Robinhood shows.")
+    if below_basis:
+        st.error("🔻 Strike BELOW cost basis (assignment = loss on shares): "
+                 + "; ".join(below_basis)
+                 + ". Premium may offset, but you'd sell the stock at a loss.")
+    st.caption("Assign Prob & Delta from realized volatility (≈ Robinhood's delta). "
+               "'Strike vs Cost' shows gain/loss on shares if assigned. "
+               "Premium $0.00 = legacy import; edit the position to set it.")
 else:
     st.info("No open option positions. Add one in **Manage Positions** below.")
 
@@ -535,6 +561,106 @@ st.divider()
 
 
 # ---------------------------------------------------------------------------
+# ALLOCATION MODEL — regime-based tech<->metals rotation (data-driven only)
+# ---------------------------------------------------------------------------
+st.subheader("🧭 Allocation Model")
+st.caption("Tech↔metals rotation. When semis + Nasdaq are strong, the model tilts "
+           "toward leveraged tech; when tech weakens, it rotates toward metals "
+           "(where safe-haven money flows). Weights within each sleeve come from "
+           "premium-yield potential and diversification. Always sums to 100%.")
+
+with st.expander("Compute rotation-based target allocation", expanded=False):
+    held = [t for t in etfs if float(etfs[t]["shares"]) > 0]
+    if not held:
+        st.info("Add holdings first.")
+    else:
+        # Show sleeve membership
+        sleeve_map = {t: ae.classify_sleeve(t) for t in held}
+        tech_list = [t for t in held if sleeve_map[t] == "tech"]
+        metal_list = [t for t in held if sleeve_map[t] == "metals"]
+        other_list = [t for t in held if sleeve_map[t] == "other"]
+        sc = st.columns(3)
+        sc[0].markdown(f"**Tech sleeve**\n\n{', '.join(tech_list) or '—'}")
+        sc[1].markdown(f"**Metals sleeve**\n\n{', '.join(metal_list) or '—'}")
+        sc[2].markdown(f"**Other**\n\n{', '.join(other_list) or '—'}")
+        st.caption("Sleeve assignment is automatic. (Tell me if any ticker is "
+                   "mis-classified and I'll adjust the lists.)")
+
+        st.markdown("**Rotation settings**")
+        bc = st.columns(3)
+        base_tech = bc[0].slider("Tech share at neutral", 0.30, 0.70,
+                                 float(alloc_settings.get("base_tech_share", 0.50)), 0.05,
+                                 help="Tech sleeve's share when tech health is neutral (0.5).")
+        max_tilt = bc[1].slider("Max rotation swing", 0.10, 0.45,
+                                float(alloc_settings.get("max_tilt", 0.30)), 0.05,
+                                help="How far the split can shift toward tech or metals at the extremes.")
+        cap = bc[2].slider("Max per ticker", 0.10, 0.50,
+                           float(alloc_settings.get("max_weight", 0.30)), 0.05)
+
+        if st.button("Compute allocation", type="primary"):
+            with st.spinner("Reading tech health (SOXX + QQQ) and correlations…"):
+                health = ae.tech_health()
+                rets = ae.fetch_returns(held, period="6mo")
+                targets = ae.compute_targets(held, rets, health=health,
+                                             base_tech_share=base_tech,
+                                             max_tilt=max_tilt, max_weight=cap)
+            for t in held:
+                etfs[t]["target_pct"] = targets[t]["target_pct"]
+            data["alloc_settings"] = {"base_tech_share": base_tech,
+                                      "max_tilt": max_tilt, "max_weight": cap}
+            persist()
+
+            meta = targets["_meta"]
+            hh = meta["tech_health"]
+            # Tech-health gauge
+            g = st.columns(4)
+            g[0].metric("Tech Health", hh["label"], delta=f"{hh['score']*100:.0f}/100")
+            g[1].metric("Semis (SOXX)", f"{hh['soxx']*100:.0f}/100")
+            g[2].metric("Nasdaq (QQQ)", f"{hh['qqq']*100:.0f}/100")
+            g[3].metric("Tech / Metals split",
+                        f"{meta['tech_share']*100:.0f}% / {meta['metal_share']*100:.0f}%")
+
+            rows = []
+            for t in sorted(held, key=lambda x: -targets[x]["target_pct"]):
+                v = targets[t]
+                cur_val = float(etfs[t]["shares"]) * prices.get(t, 0)
+                cur_w = cur_val / gross_value * 100 if gross_value > 0 else 0
+                rows.append({
+                    "Ticker": t,
+                    "Sleeve": v["sleeve"],
+                    "Target %": f"{v['target_pct']*100:.1f}%",
+                    "Current %": f"{cur_w:.1f}%",
+                    "Drift": f"{cur_w - v['target_pct']*100:+.1f}%",
+                    "Vol": f"{v['vol']*100:.0f}%" if v["vol"] else "—",
+                })
+            st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+            st.success("Targets saved. Negative 'Drift' = underweight = buy more. "
+                       "Re-run weekly; as tech health changes, the tech/metals split rotates.")
+
+st.markdown("**Reinvest premium toward target**")
+rc = st.columns([1, 3])
+with rc[0]:
+    cash_invest = st.number_input("Cash to deploy ($)", 0.0, step=500.0, key="reinvest_cash")
+if cash_invest > 0:
+    held = [t for t in etfs if float(etfs[t]["shares"]) > 0]
+    tw = {t: float(etfs[t].get("target_pct", 0)) for t in held}
+    tw_sum = sum(tw.values())
+    if tw_sum > 0:
+        tw = {t: tw[t]/tw_sum for t in tw}   # normalize in case stored targets are off
+        cur_vals = {t: float(etfs[t]["shares"]) * prices.get(t, 0) for t in held}
+        plan = ae.reinvestment_plan(cur_vals, tw, cash_invest)
+        plan_rows = [{"Ticker": t, "Buy $": f"${amt:,.0f}",
+                      "≈ Shares": f"{amt/prices.get(t,1):.1f}" if prices.get(t,0) else "—"}
+                     for t, amt in sorted(plan.items(), key=lambda x: -x[1]) if amt > 0]
+        st.dataframe(pd.DataFrame(plan_rows), use_container_width=True, hide_index=True)
+        st.caption("Buys the most underweight positions first to move you toward target. "
+                   "Never suggests selling. Deploys the full amount.")
+    else:
+        st.info("Compute a target allocation first (above).")
+
+st.divider()
+
+# ---------------------------------------------------------------------------
 # CHARTS
 # ---------------------------------------------------------------------------
 cc = st.columns(2)
@@ -583,6 +709,7 @@ def persist():
         "etfs": etfs, "history": history, "initial_capital": initial_capital,
         "capital_additions": capital_additions, "option_trades": option_trades,
         "cash_balance": cash_balance, "open_options": open_options,
+        "alloc_settings": alloc_settings,
     })
 
 sb = st.sidebar
@@ -660,10 +787,23 @@ with sb.expander("🛡️ Add / Close Option"):
     if open_options:
         labels = [f"{o['ticker']} {o['contracts']}c ${o['strike']:.0f} {o['expiry']}"
                   for o in open_options]
-        idx = st.selectbox("Close position", range(len(open_options)),
+        idx = st.selectbox("Select position", range(len(open_options)),
                            format_func=lambda i: labels[i])
-        if st.button("Close selected"):
-            open_options.pop(idx); persist(); st.rerun()
+        sel = open_options[idx]
+        # Edit fields (fixes legacy $0 premiums without delete+re-add)
+        ep = st.number_input("Edit premium/contract", 0.0, value=float(sel.get("premium_per", 0)),
+                             step=0.05, key="edit_prem")
+        ek = st.number_input("Edit strike", 0.0, value=float(sel.get("strike", 0)),
+                             step=0.5, key="edit_strike")
+        c_edit, c_close = st.columns(2)
+        with c_edit:
+            if st.button("Save edits"):
+                sel["premium_per"] = float(ep)
+                sel["strike"] = float(ek)
+                persist(); st.rerun()
+        with c_close:
+            if st.button("Close position"):
+                open_options.pop(idx); persist(); st.rerun()
 
 with sb.expander("💾 Backup / Restore"):
     backup = json.dumps({**data, "username": username,
